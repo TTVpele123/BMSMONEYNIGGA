@@ -5,6 +5,7 @@ import fs from "node:fs";
 import Database from "better-sqlite3";
 import { db as bmsm, audit } from "../lib/db";
 import { normalizeCategory } from "../lib/matcher";
+import { recordEndpoint } from "../lib/channels/select";
 import { enrollBuyer, recordMandate } from "../lib/research";
 
 const LEGACY = process.env.LEGACY_DB ?? "/Users/baileysaevitzon/.buzz/var/oliver-deal-os/data/deal-os.db";
@@ -49,9 +50,18 @@ export function importLegacy(legacyPath = LEGACY): { buyers: number; lots: numbe
         buyerId,
       );
       if (r.contact_method && String(r.contact_method).includes("@")) {
+        const email = String(r.contact_method).toLowerCase();
         bmsm().prepare("INSERT OR IGNORE INTO buyer_contacts(buyer_id,name,title,email,verification) VALUES(?,?,?,?,?)").run(
-          buyerId, r.contact_name ?? null, r.contact_title ?? null, String(r.contact_method).toLowerCase(), r.contact_verification ?? "unverified",
+          buyerId, r.contact_name ?? null, r.contact_title ?? null, email, r.contact_verification ?? "unverified",
         );
+        recordEndpoint({
+          buyerId,
+          channel: "email",
+          handle: email,
+          verified: /verified|public_intake|clay/i.test(String(r.contact_verification ?? "")),
+          confidence: 0.9,
+          source: "legacy",
+        });
       }
       buyers += 1;
     }

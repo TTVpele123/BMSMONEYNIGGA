@@ -13,7 +13,7 @@ npm test
 ./start.sh                   # http://localhost:3222  (OUTBOUND_MODE=dry_run)
 ```
 
-Saturday Grok reset: read [grok/README.md](grok/README.md).
+Saturday Grok reset: [grok/FIRST_DAY_RUNBOOK.md](grok/FIRST_DAY_RUNBOOK.md). Do not create form/social agents on day 1.
 
 ## North-star metric
 

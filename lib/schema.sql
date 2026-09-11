@@ -301,8 +301,38 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS buyer_channel_endpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  buyer_id INTEGER NOT NULL REFERENCES buyers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  verified INTEGER NOT NULL DEFAULT 0,
+  source TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(buyer_id, channel, handle)
+);
+
+CREATE TABLE IF NOT EXISTS opportunities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  buyer_id INTEGER NOT NULL REFERENCES buyers(id) ON DELETE CASCADE,
+  conversation_id INTEGER REFERENCES conversations(id),
+  lot_ids TEXT NOT NULL,
+  selected_channel TEXT,
+  selected_handle TEXT,
+  stage TEXT NOT NULL DEFAULT 'qualified'
+    CHECK (stage IN (
+      'discovered','qualified','channel_selected','prepared','dry_run','executed','response_captured','handed_off','blocked','deferred'
+    )),
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at, type);
 CREATE INDEX IF NOT EXISTS idx_lots_state ON lots(state, availability);
 CREATE INDEX IF NOT EXISTS idx_media_lot ON lot_media(lot_id, outreach_safe);
 CREATE INDEX IF NOT EXISTS idx_match_lot ON match_scores(lot_id, score);
 CREATE INDEX IF NOT EXISTS idx_research_pending ON research_jobs(state, kind);
+CREATE INDEX IF NOT EXISTS idx_endpoints_buyer ON buyer_channel_endpoints(buyer_id, channel);
+CREATE INDEX IF NOT EXISTS idx_opportunities_buyer ON opportunities(buyer_id, stage);

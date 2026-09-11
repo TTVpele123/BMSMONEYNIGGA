@@ -1,8 +1,6 @@
 import { audit, db } from "./db";
 import { rankBuyersForLot } from "./matcher";
-import { guardedOutreach } from "./outreach";
-import { enqueueGrokJob } from "./research";
-import { routeBuyer } from "./routing";
+import { createOpportunity, dispatchOpportunity } from "./opportunity";
 import { suppressedDomainSet } from "./suppression";
 
 export function ensureConversation(buyerId: number, channel: string, email: string | null): number {
@@ -57,12 +55,6 @@ export function runMatching(lotId: number): { matches: number; queued: number } 
   const targets = ranked.filter((m) => !m.hardDisqualified && m.score >= 0.45).slice(0, 15);
   for (const m of targets) {
     const buyer = buyers.find((b) => b.id === m.buyerId)!;
-    const contact = db().prepare("SELECT email FROM buyer_contacts WHERE buyer_id=? AND email IS NOT NULL LIMIT 1").get(buyer.id) as { email: string } | undefined;
-    const email = contact?.email ?? (buyer.domain.includes(".") ? `purchasing@${buyer.domain}` : null);
-    if (!email) continue;
-    const channel = routeBuyer({ ...buyer, contact_email: email });
-    const convoId = ensureConversation(buyer.id, channel, email);
-
     const otherLots = db().prepare(
       `SELECT l.id FROM match_scores ms JOIN lots l ON l.id=ms.lot_id
        WHERE ms.buyer_id=? AND ms.score>=0.45 AND ms.hard_disqualified IS NULL AND l.availability='active'
@@ -70,36 +62,33 @@ export function runMatching(lotId: number): { matches: number; queued: number } 
     ).all(buyer.id) as { id: number }[];
     const lotIds = otherLots.map((x) => x.id);
     if (!lotIds.includes(lotId)) lotIds.unshift(lotId);
-    attachLots(convoId, lotIds.slice(0, 3));
+    const topLots = lotIds.slice(0, 3);
+
+    const contact = db().prepare("SELECT email FROM buyer_contacts WHERE buyer_id=? AND email IS NOT NULL LIMIT 1").get(buyer.id) as { email: string } | undefined;
+    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", contact?.email ?? null);
+    attachLots(convoId, topLots);
 
     const convo = db().prepare("SELECT state FROM conversations WHERE id=?").get(convoId) as { state: string };
     if (["replied", "qualified", "escalated", "suppressed"].includes(convo.state)) continue;
 
     const lotRows = db().prepare(
-      `SELECT id, title, category, quantity, unit_price, brand FROM lots WHERE id IN (${lotIds.slice(0, 3).map(() => "?").join(",")})`
-    ).all(...lotIds.slice(0, 3)) as { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
+      `SELECT id, title, category, quantity, unit_price, brand FROM lots WHERE id IN (${topLots.map(() => "?").join(",")})`
+    ).all(...topLots) as { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
 
-    if (channel !== "email") {
-      enqueueGrokJob(channel === "form" ? "form_operator" : "social_operator", `Reach ${buyer.company} via ${channel}`, {
-        buyerId: buyer.id, conversationId: convoId, lotIds: lotRows.map((l) => l.id), channel,
-      });
-      db().prepare("UPDATE conversations SET state='queued', next_action=?, updated_at=datetime('now') WHERE id=?").run(`grok_${channel}`, convoId);
-      queued += 1;
-      continue;
-    }
-
-    const result = guardedOutreach({
+    const oppId = createOpportunity({ buyerId: buyer.id, conversationId: convoId, lotIds: topLots });
+    const dispatched = dispatchOpportunity({
+      opportunityId: oppId,
       conversationId: convoId,
       buyerId: buyer.id,
-      email,
-      domain: buyer.domain,
       company: buyer.company,
+      domain: buyer.domain,
       lots: lotRows,
-      channel,
-      idempotencyKey: `convo:${convoId}:lots:${lotRows.map((l) => l.id).sort().join(",")}`,
     });
-    if (result.ok) {
-      db().prepare("UPDATE conversations SET state='queued', last_outbound_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(convoId);
+
+    if (dispatched.status === "dry_run" || dispatched.status === "sent" || dispatched.status === "deferred" || dispatched.status === "duplicate") {
+      db().prepare(
+        "UPDATE conversations SET state='queued', channel=?, last_outbound_at=datetime('now'), updated_at=datetime('now') WHERE id=?"
+      ).run(dispatched.channel ?? "unknown", convoId);
       queued += 1;
     }
   }

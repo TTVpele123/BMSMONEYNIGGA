@@ -1,3 +1,4 @@
+import type { ChannelResult } from "./channels/types";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
 import { assertEligible, recordSend, reserveQueued } from "./ledger";
 import { selectOutreachMedia } from "./media";
@@ -61,7 +62,8 @@ export function guardedOutreach(input: {
   lots: { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
   channel: string;
   idempotencyKey: string;
-}): { ok: boolean; status: string; reason: string; attemptId?: number } {
+  composed?: { subject?: string; body: string };
+}): ChannelResult {
   const existing = db().prepare("SELECT id, status, reason FROM outreach_attempts WHERE idempotency_key=?").get(input.idempotencyKey) as
     | { id: number; status: string; reason: string } | undefined;
   if (existing) return { ok: existing.status !== "failed" && existing.status !== "blocked", status: "duplicate", reason: `already ${existing.status}`, attemptId: existing.id };
@@ -125,7 +127,9 @@ export function guardedOutreach(input: {
     }
   }
 
-  const { subject, body } = composeMessage({ company: input.company, lots: input.lots });
+  const composed = input.composed ?? composeMessage({ company: input.company, lots: input.lots });
+  const subject = composed.subject ?? "";
+  const body = composed.body;
   for (const lot of input.lots) reserveQueued(input.email, lot.id, input.buyerId);
 
   const mode = outboundMode();

@@ -3,7 +3,7 @@
 | | Cursor Grok Bot | xAI API | Local engine |
 |---|---|---|---|
 | What it is | Your Cursor agent quota (resets ~Saturday) | Paid HTTP API if `XAI_API_KEY` is set | This repo |
-| Use for | WhatsApp Web, forms, LinkedIn/Instagram UI | Optional extraction/copy | Orchestration, matching, safety, Gmail, DB |
+| Use for | WhatsApp Web first; later Phase 2/3 UI only | Optional extraction/copy | Orchestration, matching, safety, Gmail, DB |
 | Fixes a Bot cap? | N/A | **No** | N/A |
 | $20–50 Cursor upgrade | Does not reliably fix an app-side Grok limit | Irrelevant | Irrelevant |
 

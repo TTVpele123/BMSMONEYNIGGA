@@ -16,3 +16,6 @@ Made so implementation does not block on questions.
 12. **Clay spend stays $0.**
 13. **Do not auto-message Oliver.** Handoffs are packets for humans.
 14. **Authorized sender is `saevitzonoverstock@gmail.com`.** Local GrokBot settings state `saefamoverstock` was banned. Sign as Bailey Saevitzon / Saefam Overstock / 818-406-8612. Do not use personal or Berkeley mailboxes.
+15. **Email is the only live channel.** Forms / Instagram / LinkedIn / marketplaces are registered operators that defer. See CHANNELS.md.
+16. **Never invent a contact.** `purchasing@domain` is not a channel. Route only on stored endpoints.
+17. **Social/form live work is Phase 2/3** and must follow platform rules. No anti-automation circumvention.

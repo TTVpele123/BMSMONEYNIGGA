@@ -49,6 +49,9 @@ export function processInbound(input: {
   if (buyer && !["bounce", "out_of_office"].includes(analysis.classification)) {
     markReplied(input.from, buyer.id);
     db().prepare("UPDATE conversations SET state='replied', last_inbound_at=datetime('now'), updated_at=datetime('now') WHERE buyer_id=?").run(buyer.id);
+    db().prepare(
+      "UPDATE opportunities SET stage='response_captured', updated_at=datetime('now') WHERE buyer_id=? AND stage IN ('dry_run','executed','deferred','prepared','channel_selected')"
+    ).run(buyer.id);
   }
 
   applyLearning(buyer?.id, analysis);
