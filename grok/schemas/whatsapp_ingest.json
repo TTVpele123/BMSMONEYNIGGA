@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WhatsAppIngest",
+  "type": "object",
+  "required": ["chat", "scanned_at", "messages"],
+  "properties": {
+    "chat": { "type": "string", "const": "oliver" },
+    "scanned_at": { "type": "string", "format": "date-time" },
+    "since": { "type": "string", "format": "date-time" },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "at"],
+        "properties": {
+          "id": { "type": "string" },
+          "at": { "type": "string" },
+          "text": { "type": "string" },
+          "media": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["filename"],
+              "properties": {
+                "filename": { "type": "string" },
+                "sha256": { "type": "string" },
+                "path": { "type": "string" },
+                "bytes_base64": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

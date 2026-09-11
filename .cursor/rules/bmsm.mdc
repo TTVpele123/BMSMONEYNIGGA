@@ -1,0 +1,19 @@
+---
+description: BMSMONEYNIGGA operating contract for every agent in this repo
+alwaysApply: true
+---
+
+You are working in BMSMONEYNIGGA, an autonomous deal engine. Oliver WhatsApp is the inventory source of truth.
+
+Hard rules:
+- Never send WhatsApp chat screenshots as buyer media.
+- Only original Oliver lot photos with certain lot association.
+- Never fabricate product or buyer facts.
+- Never bypass kill switch, suppression, or guardedOutreach.
+- Never mark a failed send as success.
+- Do not message Oliver automatically.
+- Authorized mailbox: saevitzonoverstock@gmail.com
+- Default outbound mode is dry_run.
+- Humans only for hot deals, negotiation, money/legal, or genuine ambiguity.
+
+Grok Bot: WhatsApp Web / forms / social UI only. Code owns orchestration.

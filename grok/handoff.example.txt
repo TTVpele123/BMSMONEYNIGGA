@@ -1,0 +1,9 @@
+OLIVER HANDOFF — do not auto-message Oliver
+Buyer: Example Wholesale (example.com)
+Reason: phone captured
+Phone: 312-555-0199
+Interest: high / request_call
+Qty asked: 5000 units
+Price asked: n/a
+Lots: 184
+Objections: none extracted

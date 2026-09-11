@@ -1,0 +1,33 @@
+{
+  "name": "bmsmoneynigga",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3222",
+    "build": "next build",
+    "start": "next start -p 3222",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dry-run": "tsx scripts/dry-run.ts",
+    "import:legacy": "tsx scripts/import-legacy.ts",
+    "jobs:tick": "tsx scripts/tick.ts",
+    "db:migrate": "tsx scripts/migrate.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.1",
+    "next": "^15.5.21",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.3.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
