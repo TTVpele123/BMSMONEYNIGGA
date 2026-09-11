@@ -21,8 +21,17 @@ function chunk(type: string, data: Buffer): Buffer {
 
 /** Valid PNG large enough to pass outreach media gates. */
 export function writeTestPng(filePath: string, width = 420, height = 220): void {
-  const raw = Buffer.alloc((width * 3 + 1) * height, 80);
-  for (let y = 0; y < height; y++) raw[y * (width * 3 + 1)] = 0;
+  const stride = width * 3 + 1;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * stride] = 0;
+    for (let x = 0; x < width; x++) {
+      const i = y * stride + 1 + x * 3;
+      raw[i] = (x * 17 + y * 13) & 255;
+      raw[i + 1] = (x * 5 + y * 31) & 255;
+      raw[i + 2] = (x * 41 + y) & 255;
+    }
+  }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);

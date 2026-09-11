@@ -9,6 +9,19 @@ export function enqueueResearch(kind: string, query: string): number {
   return Number(info.lastInsertRowid);
 }
 
+const CHANNELS = new Set(["email", "form", "linkedin", "instagram", "phone", "manual", "unknown"]);
+
+function normalizeChannel(raw?: string): string {
+  const v = (raw ?? "unknown").toLowerCase();
+  if (CHANNELS.has(v)) return v;
+  if (/form|intake/.test(v)) return "form";
+  if (/linkedin/.test(v)) return "linkedin";
+  if (/instagram/.test(v)) return "instagram";
+  if (/phone|call/.test(v)) return "phone";
+  if (/email|gmail/.test(v)) return "email";
+  return "unknown";
+}
+
 export function enrollBuyer(input: {
   company: string;
   domain: string;
@@ -27,7 +40,7 @@ export function enrollBuyer(input: {
      VALUES(?,?,?,?,?,?,?,?)`
   ).run(
     input.company, domain, input.website ?? null, input.categories ?? "",
-    input.channel ?? "unknown", input.outreach_channel ?? "unknown",
+    input.channel ?? "unknown", normalizeChannel(input.outreach_channel),
     input.source_evidence ?? null, input.verification_status ?? "unverified",
   );
   audit("research", "buyer_enrolled", { entityType: "buyers", entityId: Number(info.lastInsertRowid), detail: { domain } });

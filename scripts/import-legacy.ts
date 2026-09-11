@@ -26,15 +26,20 @@ export function importLegacy(legacyPath = LEGACY): { buyers: number; lots: numbe
     for (const r of rows) {
       const domain = String(r.domain ?? "").toLowerCase().replace(/^www\./, "");
       if (!domain) continue;
-      const { buyerId } = enrollBuyer({
-        company: String(r.company ?? domain),
-        domain,
-        categories: String(r.categories ?? ""),
-        channel: String(r.channel ?? "unknown"),
-        outreach_channel: String(r.outreach_channel ?? "unknown"),
-        source_evidence: r.source_evidence ? String(r.source_evidence) : undefined,
-        verification_status: String(r.contact_verification ?? r.verification_class ?? "unverified"),
-      });
+      let buyerId: number;
+      try {
+        buyerId = enrollBuyer({
+          company: String(r.company ?? domain),
+          domain,
+          categories: String(r.categories ?? ""),
+          channel: String(r.channel ?? "unknown"),
+          outreach_channel: String(r.outreach_channel ?? "unknown"),
+          source_evidence: r.source_evidence ? String(r.source_evidence) : undefined,
+          verification_status: String(r.contact_verification ?? r.verification_class ?? "unverified"),
+        }).buyerId;
+      } catch {
+        continue;
+      }
       bmsm().prepare("UPDATE buyers SET txn_capacity_usd=?, geography=?, disqualified_reason=?, legacy_buyer_id=?, confidence=? WHERE id=?").run(
         r.txn_capacity_usd ?? null,
         r.geography ?? "unknown",

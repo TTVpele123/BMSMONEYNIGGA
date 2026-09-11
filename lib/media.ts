@@ -50,7 +50,13 @@ export function classifyOliverMedia(input: {
   }
   const buf = fs.readFileSync(filePath);
   const ext = path.extname(filePath).toLowerCase();
-  const mime = ext === ".png" ? "image/png" as const : [".jpg", ".jpeg"].includes(ext) ? "image/jpeg" as const : null;
+  const pngMagic = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  const jpgMagic = buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  const mime = pngMagic || ext === ".png"
+    ? "image/png" as const
+    : jpgMagic || [".jpg", ".jpeg"].includes(ext)
+      ? "image/jpeg" as const
+      : null;
   const hash = sha256(buf);
   const [width, height] = mime ? imageDimensions(buf, mime) : [null, null];
   const blob = `${filePath} ${filename} ${context}`;
@@ -61,7 +67,7 @@ export function classifyOliverMedia(input: {
   if (CHAT_UI_RE.test(blob)) {
     classification = "screenshot_chat_capture";
     reason = "WhatsApp/chat UI is never outbound media";
-  } else if (!mime || buf.length < 5000) {
+  } else if (!mime || buf.length < 800) {
     classification = "invalid";
     reason = "unsupported type or too small";
   } else if (width && height && (width < 400 || height < 200)) {
