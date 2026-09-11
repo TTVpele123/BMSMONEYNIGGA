@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { POST as postFindings } from "../app/api/research/findings/route";
 import { db } from "../lib/db";
-import { funnel } from "../lib/metrics";
+import { funnel, opportunityWorklist, researchCoverage } from "../lib/metrics";
+import { enrollBuyer } from "../lib/research";
 
 function req(body: unknown) {
   return new Request("http://localhost:3222/api/research/findings", {
@@ -84,6 +85,29 @@ describe("research findings + north-star", () => {
     const mandate = db().prepare("SELECT stance, source_quote FROM buyer_mandates WHERE buyer_id=?").get(json.buyerIds[0]) as { stance: string; source_quote: string };
     expect(mandate.stance).toBe("accepts");
     expect(mandate.source_quote).toContain("licensed apparel");
+  });
+
+  it("lists known domains so research can skip rediscovery", () => {
+    enrollBuyer({ company: "Known Co", domain: "knownco.com", categories: "apparel" });
+    const cov = researchCoverage();
+    expect(cov.mode).toBe("dry_run");
+    expect(cov.kill).toBe(false);
+    expect(cov.known_domains).toContain("knownco.com");
+    expect(cov.buyer_counts.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it("worklist exposes company/domain so Grok can rank a pair", () => {
+    const { buyerId } = enrollBuyer({ company: "Path Co", domain: "pathco.com", categories: "apparel" });
+    db().prepare(
+      "INSERT INTO opportunities(buyer_id,lot_ids,stage,reason) VALUES(?,'[1]','blocked','no legitimate channel endpoint')"
+    ).run(buyerId);
+    const w = opportunityWorklist();
+    expect(w.mode).toBe("dry_run");
+    expect(w.kill).toBe(false);
+    const pair = w.pairs.find((p) => p.buyer.domain === "pathco.com");
+    expect(pair?.buyer.company).toBe("Path Co");
+    expect(pair?.stage).toBe("blocked");
+    expect(pair?.buyer.suppressed).toBe(false);
   });
 
   it("exposes the north-star funnel keys", () => {

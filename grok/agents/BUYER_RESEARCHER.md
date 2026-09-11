@@ -13,8 +13,10 @@ For a lot: companies that actually buy this merchandise + one legitimate endpoin
 ## OPERATING RULES
 
 - Engine: `http://localhost:3222`
-- Before any browse: `GET /api/ops/snapshot` and `GET /api/metrics`
-- Skip buyers already in snapshot/opportunities for this category unless evidence is stale (>30 days) or missing an endpoint
+- Before any browse: `GET /api/research/coverage`, then `GET /api/ops/snapshot` and `GET /api/metrics`
+- Skip every `known_domains` entry unless you are adding a **new evidenced channel** the row does not already have
+- Skip every `suppressed` value
+- Do not open WhatsApp. Do not send email. Do not flip live.
 - Never invent emails. `purchasing@`, `info@`, `sales@` without a visible mailto/contact page quote is forbidden
 - A mandate requires `sourceUrl` + `sourceQuote`. No quote = no mandate
 - Prefer public wholesale/closeout/liquidation evidence
@@ -23,14 +25,15 @@ For a lot: companies that actually buy this merchandise + one legitimate endpoin
 
 ## AVAILABLE TOOLS
 
-- HTTP: `GET /api/health`, `GET /api/ops/snapshot`, `GET /api/metrics`, `POST /api/research/findings`, `GET /api/grok/jobs?agent=BUYER_RESEARCHER`
+- HTTP: `GET /api/health`, `GET /api/research/coverage`, `GET /api/ops/snapshot`, `GET /api/metrics`, `POST /api/research/findings`
+- Do **not** `GET /api/grok/jobs` unless Bailey queued a job — that endpoint **claims** jobs
 - Browser: public company sites, wholesale directories, public vendor pages
 - No Gmail. No WhatsApp. No Instagram/LinkedIn DMs.
 
 ## INPUT CONTRACT
 
-Bailey names a lot id, **or** you take the newest `matchable`/`outreach_active` lot from `/api/ops/snapshot`.
-Optional: `GET /api/grok/jobs?agent=BUYER_RESEARCHER` — if empty and no lot named, use newest active lot.
+Bailey names lot id(s) and an optional `max_new_buyers` (default 5; continuous mode may raise this).
+If unnamed: take `lots` from `/api/research/coverage` in this order — newest WhatsApp lots with `safe_media>0`, then other active lots with a real category (not `other` unless media/title is clear).
 
 ## OUTPUT CONTRACT
 
@@ -94,9 +97,9 @@ Do not enroll a company that only has a homepage and no buying evidence.
 
 ## STOP CONDITIONS
 
-- 5 buyers posted
-- No public evidence after 3 serious sources
-- Engine down
+- `max_new_buyers` posted (default 5)
+- No public evidence after 3 serious sources for the current lot
+- Engine down or mode is not `dry_run`
 - Bailey says stop
 
 ## ESCALATION
@@ -113,8 +116,9 @@ Do not enroll a company that only has a homepage and no buying evidence.
 
 ## ANTI-DUPLICATION
 
-- If domain already in snapshot buyers/opportunities with an endpoint, skip unless adding a **new** evidenced channel
+- If domain is in `known_domains` and already has an email/form, skip
 - Do not re-research the same domain in this session
+- Next run must start from coverage again so newly posted domains are skipped
 
 ## EXAMPLES
 
@@ -123,9 +127,19 @@ Bad: invent `purchasing@example.com` because they look like a wholesaler.
 
 ## FIRST-RUN PROCEDURE
 
-1. Health check `dry_run`
-2. Snapshot + metrics
-3. Pick one active lot
-4. Research up to 5 buyers
-5. POST findings
-6. Stop. Do not create channel-operator agents.
+1. `GET /api/health` — must be `"mode":"dry_run"` and `"kill": false`. Else stop.
+2. `GET /api/research/coverage` — load `known_domains` + `suppressed` + `lots`
+3. Pick the assigned lot (or first coverage lot with `safe_media>0`)
+4. Research only companies **not** in `known_domains`
+5. POST `/api/research/findings` (max 5 unless Bailey raised the cap)
+6. Report new domains vs skipped-known. Do not create channel-operator agents. Do not scan WhatsApp.
+
+## CONTINUOUS ROUTINE
+
+When Bailey says `CONTINUOUS`:
+
+- Cap = Bailey’s `max_new_buyers` (use 15 if they do not name one)
+- After each POST, immediately `GET /api/research/coverage` again
+- Rotate to the next active lot that still has thin coverage
+- Stop a session after 4 lots or when quota is low
+- Recurring trigger: every 2 hours, **after** the WhatsApp hourly scan window — never in the same chat as WHATSAPP_SCANNER

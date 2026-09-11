@@ -29,7 +29,7 @@ Engine: `http://localhost:3222` · Repo: `~/Projects/BMSMONEYNIGGA` · Mode must
 | **Prompt file** | `grok/agents/BUYER_RESEARCHER.md` |
 | **Trigger** | Manual: “research lot {id}” or `GET /api/grok/jobs?agent=BUYER_RESEARCHER` |
 | **Permissions** | Browser public sites. POST `/api/research/findings`. No WhatsApp. No send. |
-| **First action** | `GET /api/ops/snapshot` then one lot, max 5 buyers |
+| **First action** | `GET /api/research/coverage` then one lot; skip `known_domains` |
 | **Expected output** | `{ ok: true, buyerIds: [...], skippedGuessedEmails: [...] }` |
 | **Verify** | New buyers/endpoints in snapshot; no `purchasing@` without mailto evidence |
 | **Do NOT** | Invent emails, DM anyone, enroll sites with no buying evidence |
@@ -44,7 +44,7 @@ Engine: `http://localhost:3222` · Repo: `~/Projects/BMSMONEYNIGGA` · Mode must
 | **Prompt file** | `grok/agents/OPPORTUNITY_RESEARCHER.md` |
 | **Trigger** | Manual: rank newest snapshot opportunities |
 | **Permissions** | Public site of that buyer. POST findings. No execute. |
-| **First action** | Snapshot → rank ≤5 pairs → POST new evidenced endpoints |
+| **First action** | `GET /api/research/opportunities` then rank ≤8 pairs (blocked first) |
 | **Expected output** | Ranked channel list + `email_dry_run` or `no_path` |
 | **Verify** | `opportunities.selected_channel` / new endpoints; email not forced if only a form exists |
 | **Do NOT** | Send, submit forms, assume email always wins |
