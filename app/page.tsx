@@ -1,4 +1,6 @@
 import { db, getSetting, killSwitchOn, outboundMode } from "@/lib/db";
+import { AUTHORIZED_SENDER } from "@/lib/email/address";
+import { loadTokens, oauthClientConfigured, tokensPresent } from "@/lib/email/tokens";
 import { northStar } from "@/lib/orchestrator";
 import { openHandoffs } from "@/lib/escalate";
 
@@ -12,11 +14,28 @@ export default function HomePage() {
   ).all() as Array<{ id: number; state: string; channel: string; company: string }>;
   const lastScan = db().prepare("SELECT scanned_at, COUNT(*) AS n FROM whatsapp_messages GROUP BY scanned_at ORDER BY scanned_at DESC LIMIT 1").get() as { scanned_at: string; n: number } | undefined;
   const handoffs = openHandoffs();
+  const gmailConnected = tokensPresent();
+  const gmailReady = oauthClientConfigured();
+  const gmailAddress = loadTokens()?.address ?? null;
 
   return (
     <div className="wrap">
       <h1>BMSMONEYNIGGA</h1>
       <p className="muted">Autonomous deal engine · mode {outboundMode()} · kill {killSwitchOn() ? "ON" : "off"} · sender {getSetting("authorized_sender")}</p>
+      <section className="card gmail-connect" aria-label="Gmail OAuth">
+        <h2>Gmail</h2>
+        <p>
+          {gmailConnected
+            ? `Connected as ${gmailAddress ?? AUTHORIZED_SENDER}`
+            : gmailReady
+              ? `Not connected · sign in as ${AUTHORIZED_SENDER}`
+              : "OAuth client not configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET)"}
+        </p>
+        <p className="muted">Connecting does not send mail. outbound_mode stays {outboundMode()}.</p>
+        <a className="btn" href="/api/gmail/oauth/start">
+          {gmailConnected ? "Reconnect Gmail" : "Connect Gmail"}
+        </a>
+      </section>
       <div className="grid">
         <div className="card"><h2>Conversations / lot</h2><div className="n">{ns.conversations_per_lot}</div></div>
         <div className="card"><h2>Qualified convos</h2><div className="n">{ns.qualified_conversations}</div></div>

@@ -12,3 +12,6 @@ th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #2a2c34; v
 pre { white-space: pre-wrap; font-size: 13px; }
 button, .btn { background: #f3c16b; color: #111; border: 0; border-radius: 8px; padding: 8px 12px; font-weight: 650; cursor: pointer; }
 .danger { background: #d85a5a; color: #fff; }
+.gmail-connect { margin: 16px 0; }
+.gmail-connect p { margin: 0 0 8px; }
+.gmail-connect .btn { display: inline-block; text-decoration: none; }
