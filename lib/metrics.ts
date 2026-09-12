@@ -17,7 +17,7 @@ export function funnel() {
     ).all(),
     outreach_attempts: q("SELECT COUNT(*) AS n FROM outreach_attempts"),
     dry_runs: q("SELECT COUNT(*) AS n FROM outreach_attempts WHERE status='dry_run'"),
-    live_sends: q("SELECT COUNT(*) AS n FROM outreach_attempts WHERE status='sent'"),
+    live_sends: q("SELECT COUNT(*) AS n FROM outreach_attempts WHERE status='sent' AND provider_message_id IS NOT NULL AND trim(provider_message_id)!=''"),
     responses: q("SELECT COUNT(*) AS n FROM inbound_events"),
     positive_responses: q("SELECT COUNT(*) AS n FROM inbound_events WHERE interest_level IN ('high','medium')"),
     phones_captured: q("SELECT COUNT(*) AS n FROM inbound_events WHERE phone IS NOT NULL AND phone!=''"),
@@ -68,7 +68,13 @@ export function researchCoverage() {
               (SELECT COUNT(*) FROM match_scores ms WHERE ms.lot_id=l.id AND ms.score>=0.45 AND ms.hard_disqualified IS NULL) AS qualified_matches
          FROM lots l
         WHERE l.availability='active'
-          AND l.state IN ('matchable','outreach_active','structured','media_ready')
+          AND l.project_gate NOT IN ('DO_NOT_MARKET','ARCHIVED')
+          AND l.state IN ('matchable','outreach_active','media_ready')
+          AND EXISTS (
+            SELECT 1 FROM lot_media m
+             WHERE m.lot_id=l.id AND m.outreach_safe=1 AND m.association_certain=1
+               AND m.classification NOT IN ('screenshot_chat_capture','invalid','duplicate')
+          )
         ORDER BY l.id DESC`
     ).all(),
   };

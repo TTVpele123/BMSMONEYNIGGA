@@ -1,12 +1,13 @@
+import { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSentToday, liveSentToDomainToday } from "./caps";
 import { parseRecipient } from "./email/address";
 import { selectSendableLots } from "./email/attachments";
 import { sendAuthorizedEmail } from "./email/provider";
 import type { ChannelResult } from "./channels/types";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
 import { assertEligible, recordSend, reserveQueued } from "./ledger";
+import { isCapacityReason } from "./repairs";
 
-const DAILY_CAP = 20;
-const DOMAIN_CAP = 2;
+export { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSendCapacity, liveSentToday, liveSentToDomainToday } from "./caps";
 
 export function composeMessage(input: {
   company: string;
@@ -38,22 +39,6 @@ export function composeMessage(input: {
   return { subject, body: lines.join("\n") };
 }
 
-function liveSentToday(): number {
-  const row = db().prepare(
-    "SELECT COUNT(*) AS n FROM outreach_attempts WHERE status='sent' AND created_at >= datetime('now','-1 day')"
-  ).get() as { n: number };
-  return row.n;
-}
-
-function liveSentToDomainToday(domain: string): number {
-  const row = db().prepare(
-    `SELECT COUNT(*) AS n FROM outreach_attempts oa
-     JOIN buyers b ON b.id=oa.buyer_id
-     WHERE b.domain=? AND oa.status='sent' AND oa.created_at >= datetime('now','-1 day')`
-  ).get(domain) as { n: number };
-  return row.n;
-}
-
 export async function guardedOutreach(input: {
   conversationId: number;
   buyerId: number;
@@ -75,9 +60,37 @@ export async function guardedOutreach(input: {
   if (existing?.status === "dry_run" && mode === "dry_run") {
     return { ok: true, status: "duplicate", reason: "already dry_run", attemptId: existing.id };
   }
-  if (existing?.status === "blocked") {
+  if (existing?.status === "blocked" && !isCapacityReason(existing.reason)) {
     return { ok: false, status: "duplicate", reason: `already ${existing.status}`, attemptId: existing.id };
   }
+
+  const persistCapacity = (
+    reason: string,
+    mediaHashes: string[],
+    lotIds: number[],
+    row: { id: number; status: string } | undefined,
+  ): ChannelResult => {
+    if (row?.status === "dry_run") {
+      return { ok: false, status: "deferred", reason, attemptId: row.id };
+    }
+    if (row) {
+      db().prepare(
+        `UPDATE outreach_attempts SET status='failed', reason=?, media_hashes=?, lot_ids=? WHERE id=?`
+      ).run(reason, JSON.stringify(mediaHashes), JSON.stringify(lotIds), row.id);
+      audit("outreach", "attempt_deferred_cap", { entityType: "outreach_attempts", entityId: row.id, ok: false, detail: { reason } });
+      return { ok: false, status: "deferred", reason, attemptId: row.id };
+    }
+    const info = db().prepare(
+      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key)
+       VALUES(?,?,?,?,?,?,?,'failed',?,?)`
+    ).run(
+      input.conversationId, input.buyerId, input.channel, JSON.stringify(lotIds),
+      "", "", JSON.stringify(mediaHashes), reason, input.idempotencyKey,
+    );
+    const id = Number(info.lastInsertRowid);
+    audit("outreach", "attempt_deferred_cap", { entityType: "outreach_attempts", entityId: id, ok: false, detail: { reason } });
+    return { ok: false, status: "deferred", reason, attemptId: id };
+  };
 
   const persist = (
     status: "dry_run" | "sent" | "blocked" | "failed",
@@ -131,8 +144,12 @@ export async function guardedOutreach(input: {
   }
 
   if (mode === "live") {
-    if (liveSentToday() >= DAILY_CAP) return persist("blocked", `daily cap ${DAILY_CAP}`, media.pick.hashes, "", "", lots.map((l) => l.id));
-    if (liveSentToDomainToday(input.domain) >= DOMAIN_CAP) return persist("blocked", `domain cap ${DOMAIN_CAP}`, media.pick.hashes, "", "", lots.map((l) => l.id));
+    if (liveSentToday() >= LIVE_DAILY_CAP) {
+      return persistCapacity(`daily cap ${LIVE_DAILY_CAP}`, media.pick.hashes, lots.map((l) => l.id), existing);
+    }
+    if (liveSentToDomainToday(input.domain) >= LIVE_DOMAIN_CAP) {
+      return persistCapacity(`domain cap ${LIVE_DOMAIN_CAP}`, media.pick.hashes, lots.map((l) => l.id), existing);
+    }
   }
 
   const composed = input.composed && media.pick.lots.length === input.lots.length
@@ -151,6 +168,8 @@ export async function guardedOutreach(input: {
     subject,
     body,
     attachments: media.pick.attachments,
+    lotIds: lots.map((l) => l.id),
+    domain: input.domain,
   });
   if (!sent.ok) {
     return persist("failed", sent.error, media.pick.hashes, body, subject, lots.map((l) => l.id));

@@ -1,6 +1,8 @@
 import { audit, db } from "./db";
+import { lotHasSendableMedia } from "./email/attachments";
 import { rankBuyersForLot } from "./matcher";
 import { createOpportunity, dispatchOpportunity } from "./opportunity";
+import { pauseLotsMissingOriginalMedia } from "./repairs";
 import { suppressedDomainSet } from "./suppression";
 
 export function ensureConversation(buyerId: number, channel: string, email: string | null): number {
@@ -24,6 +26,11 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
     | { id: number; category: string; quantity: number | null; unit_price: number | null; total_price: number | null; title: string; brand: string | null }
     | undefined;
   if (!lot) return { matches: 0, queued: 0 };
+  if (!lotHasSendableMedia(lotId)) {
+    pauseLotsMissingOriginalMedia();
+    audit("matching", "skipped_no_original_media", { entityType: "lots", entityId: lotId, ok: false });
+    return { matches: 0, queued: 0 };
+  }
 
   const buyers = db().prepare("SELECT * FROM buyers").all() as Array<{
     id: number; company: string; domain: string; channel: string; categories: string;
@@ -58,11 +65,14 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
     const otherLots = db().prepare(
       `SELECT l.id FROM match_scores ms JOIN lots l ON l.id=ms.lot_id
        WHERE ms.buyer_id=? AND ms.score>=0.45 AND ms.hard_disqualified IS NULL AND l.availability='active'
-       ORDER BY ms.score DESC LIMIT 3`
+         AND l.state NOT IN ('paused','sold','archived')
+         AND l.project_gate NOT IN ('DO_NOT_MARKET','ARCHIVED')
+       ORDER BY ms.score DESC LIMIT 8`
     ).all(buyer.id) as { id: number }[];
-    const lotIds = otherLots.map((x) => x.id);
+    const lotIds = otherLots.map((x) => x.id).filter((id) => lotHasSendableMedia(id));
     if (!lotIds.includes(lotId)) lotIds.unshift(lotId);
-    const topLots = lotIds.slice(0, 3);
+    const topLots = lotIds.filter((id) => lotHasSendableMedia(id)).slice(0, 3);
+    if (!topLots.length) continue;
 
     const contact = db().prepare("SELECT email FROM buyer_contacts WHERE buyer_id=? AND email IS NOT NULL LIMIT 1").get(buyer.id) as { email: string } | undefined;
     const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", contact?.email ?? null);

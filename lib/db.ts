@@ -8,9 +8,43 @@ let cached: Database.Database | null = null;
 function applySchema(d: Database.Database): void {
   const sql = fs.readFileSync(path.join(process.cwd(), "lib", "schema.sql"), "utf8");
   d.exec(sql);
+  ensureResearchJobsSchema(d);
   d.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('outbound_mode',?)").run(process.env.OUTBOUND_MODE ?? "dry_run");
   d.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('kill_switch',?)").run(process.env.KILL_SWITCH ?? "false");
   d.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('authorized_sender','saevitzonoverstock@gmail.com')").run();
+}
+
+/** Existing DBs were created with a narrower CHECK and no lot_id. Rebuild in place. */
+function ensureResearchJobsSchema(d: Database.Database): void {
+  const row = d.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='research_jobs'").get() as { sql: string } | undefined;
+  if (!row) return;
+  const cols = d.prepare("PRAGMA table_info(research_jobs)").all() as { name: string }[];
+  const hasLotId = cols.some((c) => c.name === "lot_id");
+  const hasCancelled = /'cancelled'/.test(row.sql);
+  if (hasLotId && hasCancelled) return;
+  d.exec("PRAGMA foreign_keys=OFF");
+  d.exec(`
+    CREATE TABLE research_jobs__mig (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      query TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','running','done','failed','cancelled','expired')),
+      result TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      lot_id INTEGER REFERENCES lots(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO research_jobs__mig(id,kind,query,state,result,attempts,last_error,lot_id,created_at,updated_at)
+    SELECT id, kind, query, state, result, attempts, last_error, NULL, created_at, updated_at FROM research_jobs;
+    DROP TABLE research_jobs;
+    ALTER TABLE research_jobs__mig RENAME TO research_jobs;
+    CREATE INDEX IF NOT EXISTS idx_research_pending ON research_jobs(state, kind);
+    CREATE INDEX IF NOT EXISTS idx_research_lot_pending ON research_jobs(lot_id, state);
+  `);
+  d.exec("PRAGMA foreign_keys=ON");
 }
 
 export function db(): Database.Database {

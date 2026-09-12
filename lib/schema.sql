@@ -269,10 +269,11 @@ CREATE TABLE IF NOT EXISTS research_jobs (
   kind TEXT NOT NULL,
   query TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending'
-    CHECK (state IN ('pending','running','done','failed')),
+    CHECK (state IN ('pending','running','done','failed','cancelled','expired')),
   result TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
+  lot_id INTEGER REFERENCES lots(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

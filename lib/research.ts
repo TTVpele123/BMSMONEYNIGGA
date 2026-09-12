@@ -1,12 +1,120 @@
 import { audit, db } from "./db";
+import { lotHasSendableMedia } from "./email/attachments";
 import { emit } from "./events";
 import { validateMandateEvidence } from "./matcher";
+import { pauseLotsMissingOriginalMedia } from "./repairs";
 
-export function enqueueResearch(kind: string, query: string): number {
+export function discoverQuery(lot: { id: number; category: string; title: string }): string {
+  return `wholesale buyers ${lot.category} ${lot.title}`;
+}
+
+export function lotEligibleForResearch(lotId: number): boolean {
+  const lot = db().prepare("SELECT id, state, availability, project_gate FROM lots WHERE id=?").get(lotId) as
+    | { id: number; state: string; availability: string; project_gate: string }
+    | undefined;
+  if (!lot) return false;
+  if (lot.state === "paused" || lot.state === "sold" || lot.state === "archived") return false;
+  if (lot.availability === "paused" || lot.availability === "sold") return false;
+  if (lot.project_gate === "DO_NOT_MARKET" || lot.project_gate === "ARCHIVED") return false;
+  return lotHasSendableMedia(lotId);
+}
+
+/** One pending/running discover job per media-eligible lot. Lot-less discover jobs are not created. */
+export function enqueueResearch(kind: string, query: string, lotId?: number): number {
+  if (kind === "discover") {
+    if (lotId == null || !lotEligibleForResearch(lotId)) return 0;
+    const dup = db().prepare(
+      "SELECT id FROM research_jobs WHERE kind='discover' AND lot_id=? AND state IN ('pending','running') ORDER BY id LIMIT 1"
+    ).get(lotId) as { id: number } | undefined;
+    if (dup) return dup.id;
+    const info = db().prepare(
+      "INSERT INTO research_jobs(kind,query,lot_id,state) VALUES('discover',?,?,'pending')"
+    ).run(query, lotId);
+    return Number(info.lastInsertRowid);
+  }
   const dup = db().prepare("SELECT id FROM research_jobs WHERE kind=? AND query=? AND state IN ('pending','running')").get(kind, query) as { id: number } | undefined;
   if (dup) return dup.id;
-  const info = db().prepare("INSERT INTO research_jobs(kind,query) VALUES(?,?)").run(kind, query);
+  const info = db().prepare("INSERT INTO research_jobs(kind,query,lot_id) VALUES(?,?,?)").run(kind, query, lotId ?? null);
   return Number(info.lastInsertRowid);
+}
+
+export type ExpiredResearchJob = {
+  id: number;
+  lotId: number | null;
+  query: string;
+  state: "cancelled" | "expired";
+  reason: string;
+};
+
+function matchJobToLot(query: string): { id: number; category: string; title: string; state: string; availability: string; project_gate: string } | null {
+  const lots = db().prepare("SELECT id, category, title, state, availability, project_gate FROM lots").all() as Array<{
+    id: number; category: string; title: string; state: string; availability: string; project_gate: string;
+  }>;
+  return lots.find((lot) => query === discoverQuery(lot)) ?? null;
+}
+
+/** Cancel/expire pending jobs that target media-less, paused, or unattached pre-gate queries. Never deletes. */
+export function expireIneligibleResearchJobs(): { cancelled: number; expired: number; kept: number; jobs: ExpiredResearchJob[] } {
+  const pending = db().prepare(
+    "SELECT id, kind, query, lot_id, state FROM research_jobs WHERE state IN ('pending','running')"
+  ).all() as Array<{ id: number; kind: string; query: string; lot_id: number | null; state: string }>;
+  const jobs: ExpiredResearchJob[] = [];
+  let kept = 0;
+  const pendingByLot = new Map<number, number>();
+  for (const row of pending) {
+    const matched = row.lot_id
+      ? db().prepare("SELECT id, category, title, state, availability, project_gate FROM lots WHERE id=?").get(row.lot_id) as
+        | { id: number; category: string; title: string; state: string; availability: string; project_gate: string }
+        | undefined
+      : matchJobToLot(row.query);
+    if (matched && lotEligibleForResearch(matched.id)) {
+      const existing = pendingByLot.get(matched.id);
+      if (existing != null) {
+        const reason = `duplicate pending discover for lot ${matched.id}`;
+        db().prepare(
+          `UPDATE research_jobs SET state='cancelled', lot_id=?, last_error=?, result=?, updated_at=datetime('now') WHERE id=?`
+        ).run(matched.id, reason, JSON.stringify({ reason, lotId: matched.id }), row.id);
+        jobs.push({ id: row.id, lotId: matched.id, query: row.query, state: "cancelled", reason });
+        continue;
+      }
+      pendingByLot.set(matched.id, row.id);
+      if (row.lot_id !== matched.id) {
+        db().prepare("UPDATE research_jobs SET lot_id=?, updated_at=datetime('now') WHERE id=?").run(matched.id, row.id);
+      }
+      kept += 1;
+      continue;
+    }
+    if (matched) {
+      const reason = `lot ${matched.id} is media-less or paused/DO_NOT_MARKET`;
+      db().prepare(
+        `UPDATE research_jobs SET state='cancelled', lot_id=?, last_error=?, result=?, updated_at=datetime('now') WHERE id=?`
+      ).run(matched.id, reason, JSON.stringify({ reason, lotId: matched.id }), row.id);
+      jobs.push({ id: row.id, lotId: matched.id, query: row.query, state: "cancelled", reason });
+      continue;
+    }
+    const reason = "pre-media-gate job not tied to a media-eligible lot";
+    db().prepare(
+      `UPDATE research_jobs SET state='expired', last_error=?, result=?, updated_at=datetime('now') WHERE id=?`
+    ).run(reason, JSON.stringify({ reason }), row.id);
+    jobs.push({ id: row.id, lotId: null, query: row.query, state: "expired", reason });
+  }
+  if (jobs.length) {
+    audit("research", "expired_ineligible_jobs", {
+      detail: { cancelled: jobs.filter((j) => j.state === "cancelled").length, expired: jobs.filter((j) => j.state === "expired").length, kept },
+    });
+  }
+  return {
+    cancelled: jobs.filter((j) => j.state === "cancelled").length,
+    expired: jobs.filter((j) => j.state === "expired").length,
+    kept,
+    jobs,
+  };
+}
+
+export function pendingDiscoverQueue(): { jobId: number; lotId: number | null; query: string }[] {
+  return db().prepare(
+    "SELECT id AS jobId, lot_id AS lotId, query FROM research_jobs WHERE kind='discover' AND state IN ('pending','running') ORDER BY lot_id, id"
+  ).all() as { jobId: number; lotId: number | null; query: string }[];
 }
 
 const CHANNELS = new Set(["email", "form", "linkedin", "instagram", "phone", "manual", "unknown"]);
@@ -76,22 +184,29 @@ export function recordMandate(input: {
 }
 
 export function researchTick(): { queued: number; seeded: number } {
-  const activeLots = db().prepare("SELECT id, category, title FROM lots WHERE availability='active' AND state IN ('matchable','outreach_active','structured','media_ready')").all() as { id: number; category: string; title: string }[];
+  pauseLotsMissingOriginalMedia();
+  const activeLots = db().prepare(
+    `SELECT id, category, title FROM lots
+     WHERE availability='active'
+       AND project_gate NOT IN ('DO_NOT_MARKET','ARCHIVED')
+       AND state IN ('matchable','outreach_active','media_ready')`
+  ).all() as { id: number; category: string; title: string }[];
+  expireIneligibleResearchJobs();
+  const eligible = activeLots.filter((lot) => lotEligibleForResearch(lot.id));
   let queued = 0;
-  for (const lot of activeLots) {
+  for (const lot of eligible) {
     const coverage = db().prepare("SELECT COUNT(*) AS n FROM match_scores WHERE lot_id=? AND score>=0.6 AND hard_disqualified IS NULL").get(lot.id) as { n: number };
     if (coverage.n < 8) {
-      enqueueResearch("discover", `wholesale buyers ${lot.category} ${lot.title}`);
-      queued += 1;
+      const had = db().prepare(
+        "SELECT id FROM research_jobs WHERE kind='discover' AND lot_id=? AND state IN ('pending','running')"
+      ).get(lot.id);
+      const id = enqueueResearch("discover", discoverQuery(lot), lot.id);
+      if (id && !had) queued += 1;
     }
   }
-  enqueueResearch("discover", "licensed apparel closeout wholesale buyers");
-  enqueueResearch("discover", "footwear closeout wholesale buyers");
-  enqueueResearch("discover", "health beauty closeout buyers");
-  queued += 3;
   emit("research.tick", { queued }, `research.tick:${new Date().toISOString().slice(0, 13)}`);
-  audit("research", "tick", { detail: { queued, lots: activeLots.length } });
-  return { queued, seeded: activeLots.length };
+  audit("research", "tick", { detail: { queued, lots: eligible.length } });
+  return { queued, seeded: eligible.length };
 }
 
 export function enqueueGrokJob(agent: string, instruction: string, input: unknown): number {

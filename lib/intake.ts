@@ -6,6 +6,7 @@ import { emit } from "./events";
 import { normalizeCategory } from "./matcher";
 import { classifyOliverMedia } from "./media";
 import { mediaRoot } from "./paths";
+import { restoreLotIfEligible } from "./repairs";
 
 export const WhatsAppIngest = z.object({
   chat: z.string().default("oliver"),
@@ -123,11 +124,17 @@ export function ingestWhatsApp(raw: unknown): { ok: true; newMessages: number; l
       if (certain) certainMedia += 1;
     }
 
-    const nextState = certainMedia > 0 ? "media_ready" : "structured";
-    db().prepare("UPDATE lots SET state=?, updated_at=datetime('now') WHERE id=?").run(nextState === "media_ready" ? "matchable" : nextState, lotId);
+    if (certainMedia > 0) {
+      db().prepare("UPDATE lots SET state='matchable', availability='active', updated_at=datetime('now') WHERE id=?").run(lotId);
+      restoreLotIfEligible(lotId);
+      emit("match.requested", { lotId }, `match.requested:${lotId}:${msg.id}`);
+    } else {
+      db().prepare(
+        "UPDATE lots SET state='paused', project_gate='DO_NOT_MARKET', availability='paused', updated_at=datetime('now') WHERE id=?"
+      ).run(lotId);
+    }
     lotsTouched.add(lotId);
     emit("lot.created", { lotId }, `lot.created:${lotId}`);
-    emit("match.requested", { lotId }, `match.requested:${lotId}:${msg.id}`);
     audit("lot_intake", "lot_upserted", { entityType: "lots", entityId: lotId, detail: { messageId: msg.id, certainMedia } });
   }
 

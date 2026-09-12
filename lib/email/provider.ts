@@ -1,3 +1,4 @@
+import { assertLiveOutbound } from "../outbound-gate";
 import { AUTHORIZED_SENDER, assertAuthorizedSender, parseFromHeader } from "./address";
 import { buildRawMessage, type MimeAttachment } from "./mime";
 import { loadTokens, oauthClientConfigured, refreshAccess, saveTokens, tokensPresent } from "./tokens";
@@ -7,6 +8,8 @@ export type GmailSendInput = {
   subject: string;
   body: string;
   attachments: MimeAttachment[];
+  lotIds?: number[];
+  domain?: string;
 };
 
 export type GmailSendResult = { ok: true; id: string } | { ok: false; error: string };
@@ -63,6 +66,8 @@ const liveClient: GmailClient = {
     return r.json() as Promise<{ emailAddress?: string }>;
   },
   async send(input) {
+    const gate = assertLiveOutbound({ to: input.to, domain: input.domain, lotIds: input.lotIds });
+    if (!gate.ok) return { ok: false, error: gate.reason };
     const raw = buildRawMessage({
       from: AUTHORIZED_SENDER,
       to: input.to,
@@ -143,7 +148,16 @@ function extractPlain(payload: { mimeType?: string; body?: { data?: string }; pa
 }
 
 export function getGmailClient(): GmailClient {
-  return injected ?? liveClient;
+  const inner = injected ?? liveClient;
+  return {
+    profile: () => inner.profile(),
+    listInbox: (historyId) => inner.listInbox(historyId),
+    async send(input) {
+      const gate = assertLiveOutbound({ to: input.to, domain: input.domain, lotIds: input.lotIds });
+      if (!gate.ok) return { ok: false, error: gate.reason };
+      return inner.send(input);
+    },
+  };
 }
 
 export async function assertGmailIdentity(): Promise<{ ok: true } | { ok: false; reason: string }> {

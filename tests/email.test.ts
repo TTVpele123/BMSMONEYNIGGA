@@ -243,8 +243,10 @@ describe("4 dry-run counters vs live caps", () => {
       conversationId, buyerId, email: "buy@capco.com", domain: "capco.com",
       company: "Cap", lots: [lotC], channel: "email", idempotencyKey: "live-domain-3",
     });
-    expect(third.status).toBe("blocked");
+    expect(third.status).toBe("deferred");
     expect(third.reason).toMatch(/domain cap/);
+    const capRow = db().prepare("SELECT status FROM outreach_attempts WHERE idempotency_key='live-domain-3'").get() as { status: string };
+    expect(capRow.status).not.toBe("blocked");
   });
 });
 
