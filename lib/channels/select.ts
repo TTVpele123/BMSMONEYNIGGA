@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { parseRecipient } from "../email/address";
 import { isSuppressed } from "../suppression";
 import type { ChannelEndpoint, ChannelId } from "./types";
 
@@ -22,8 +23,13 @@ export function recordEndpoint(input: {
   verified?: boolean;
   source?: string;
 }): void {
-  const handle = input.handle.trim();
+  let handle = input.handle.trim();
   if (!handle) return;
+  if (input.channel === "email") {
+    const parsed = parseRecipient(handle);
+    if (!parsed.ok) return;
+    handle = parsed.email;
+  }
   db().prepare(
     `INSERT INTO buyer_channel_endpoints(buyer_id,channel,handle,confidence,verified,source)
      VALUES(?,?,?,?,?,?)
@@ -47,6 +53,12 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
     "SELECT channel, handle, confidence, verified, source FROM buyer_channel_endpoints WHERE buyer_id=?"
   ).all(buyerId) as Array<{ channel: ChannelId; handle: string; confidence: number; verified: number; source: string | null }>;
   for (const r of stored) {
+    if (r.channel === "email") {
+      const parsed = parseRecipient(r.handle);
+      if (!parsed.ok) continue;
+      add({ channel: r.channel, handle: parsed.email, confidence: r.confidence, verified: r.verified === 1, source: r.source ?? "stored" });
+      continue;
+    }
     add({ channel: r.channel, handle: r.handle, confidence: r.confidence, verified: r.verified === 1, source: r.source ?? "stored" });
   }
 
@@ -55,7 +67,10 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
   ).all(buyerId) as Array<{ email: string | null; phone: string | null; linkedin: string | null; instagram: string | null; verification: string }>;
   for (const c of contacts) {
     const verified = /verified|public_intake|clay/i.test(c.verification ?? "");
-    if (c.email) add({ channel: "email", handle: c.email.toLowerCase(), confidence: verified ? 0.95 : 0.6, verified, source: "buyer_contacts" });
+    if (c.email) {
+      const parsed = parseRecipient(c.email);
+      if (parsed.ok) add({ channel: "email", handle: parsed.email, confidence: verified ? 0.95 : 0.6, verified, source: "buyer_contacts" });
+    }
     if (c.phone) add({ channel: "phone", handle: c.phone, confidence: 0.7, verified, source: "buyer_contacts" });
     if (c.linkedin) add({ channel: "linkedin", handle: c.linkedin, confidence: 0.65, verified, source: "buyer_contacts" });
     if (c.instagram) add({ channel: "instagram", handle: c.instagram, confidence: 0.6, verified, source: "buyer_contacts" });

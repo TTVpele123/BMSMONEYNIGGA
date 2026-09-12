@@ -110,7 +110,7 @@ describe("inbound", () => {
 });
 
 describe("end-to-end dry run", () => {
-  it("WhatsApp lot -> match -> dry-run outreach -> inbound escalate", () => {
+  it("WhatsApp lot -> match -> dry-run outreach -> inbound escalate", async () => {
     const buyerId = seedBuyer("fitco.com", { company: "Fit Co", categories: "licensed,apparel,closeout" });
     recordMandate({
       buyerId,
@@ -143,14 +143,14 @@ describe("end-to-end dry run", () => {
     const media = db().prepare("SELECT * FROM lot_media WHERE lot_id=?").get(lot.id) as { outreach_safe: number; classification: string };
     expect(media.outreach_safe).toBe(1);
 
-    const matched = runMatching(lot.id);
+    const matched = await runMatching(lot.id);
     expect(matched.matches).toBeGreaterThan(0);
     const attempt = db().prepare("SELECT * FROM outreach_attempts WHERE buyer_id=?").get(buyerId) as { status: string; media_hashes: string; body: string };
     expect(attempt.status).toBe("dry_run");
     expect(JSON.parse(attempt.media_hashes).length).toBeGreaterThan(0);
     expect(attempt.body).toContain("Saefam Overstock");
 
-    const orch = tick();
+    const orch = await tick();
     expect(orch.failed).toBe(0);
 
     const inbound = processInbound({
@@ -161,7 +161,7 @@ describe("end-to-end dry run", () => {
     expect(inbound.escalated).toBe(true);
   });
 
-  it("blocks screenshot media, duplicates, kill switch, and missing media", () => {
+  it("blocks screenshot media, duplicates, kill switch, and missing media", async () => {
     const buyerId = seedBuyer("block.com");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bmsm-block-"));
     const shot = path.join(dir, "whatsapp-screenshot.png");
@@ -178,7 +178,7 @@ describe("end-to-end dry run", () => {
     });
     const lot = db().prepare("SELECT id FROM lots WHERE external_key='wa:wa-bad'").get() as { id: number };
     const convo = db().prepare("INSERT INTO conversations(buyer_id,state,channel,contact_email) VALUES(?,'idle','email','buy@block.com')").run(buyerId);
-    const blocked = guardedOutreach({
+    const blocked = await guardedOutreach({
       conversationId: Number(convo.lastInsertRowid),
       buyerId,
       email: "buy@block.com",
@@ -191,7 +191,7 @@ describe("end-to-end dry run", () => {
     expect(blocked.ok).toBe(false);
     expect(blocked.reason).toMatch(/media|screenshot/i);
 
-    const again = guardedOutreach({
+    const again = await guardedOutreach({
       conversationId: Number(convo.lastInsertRowid),
       buyerId,
       email: "buy@block.com",

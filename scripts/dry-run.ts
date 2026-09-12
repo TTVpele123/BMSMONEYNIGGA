@@ -44,8 +44,8 @@ const ingested = ingestWhatsApp({
   }],
 });
 const lotId = ingested.lotsTouched[0];
-const matched = runMatching(lotId);
-const orch = tick();
+const matched = await runMatching(lotId);
+const orch = await tick();
 researchTick();
 const inbound = processInbound({
   from: "buy@demowholesale.example",

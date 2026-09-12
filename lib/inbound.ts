@@ -1,5 +1,6 @@
 import { audit, db } from "./db";
 import { classifyReply, isHotLead, type ReplyAnalysisT } from "./classify";
+import { parseFromHeader, parseRecipient } from "./email/address";
 import { emit } from "./events";
 import { createEscalation } from "./escalate";
 import { recordOutcome } from "./learning";
@@ -12,6 +13,7 @@ export function processInbound(input: {
   providerMessageId?: string;
   bounced?: boolean;
 }): { ok: true; classification: string; conversationId: number | null; escalated: boolean } {
+  const from = parseFromHeader(input.from);
   const existing = input.providerMessageId
     ? db().prepare("SELECT id FROM inbound_events WHERE provider_message_id=?").get(input.providerMessageId)
     : null;
@@ -26,7 +28,7 @@ export function processInbound(input: {
      LEFT JOIN buyer_contacts bc ON bc.buyer_id=b.id
      WHERE lower(bc.email)=lower(?) OR lower(b.domain)=lower(?)
      LIMIT 1`
-  ).get(input.from, input.from.split("@")[1] ?? "") as { id: number; conversation_id: number | null } | undefined;
+  ).get(from, from.split("@")[1] ?? "") as { id: number; conversation_id: number | null } | undefined;
 
   const info = db().prepare(
     `INSERT INTO inbound_events(conversation_id,buyer_id,from_address,provider_message_id,classification,interest_level,phone,quantity,price,raw_text)
@@ -34,7 +36,7 @@ export function processInbound(input: {
   ).run(
     buyer?.conversation_id ?? null,
     buyer?.id ?? null,
-    input.from,
+    from,
     input.providerMessageId ?? null,
     analysis.classification,
     analysis.interestLevel,
@@ -44,10 +46,13 @@ export function processInbound(input: {
     input.text,
   );
 
-  if (analysis.classification === "unsubscribe") writeUnsubscribe(input.from);
-  if (analysis.classification === "bounce") writeBounce(input.from);
+  if (analysis.classification === "unsubscribe") writeUnsubscribe(from);
+  if (analysis.classification === "bounce") {
+    const bounceAddr = parseRecipient(from);
+    if (bounceAddr.ok && !/mailer-daemon|postmaster/i.test(bounceAddr.email)) writeBounce(bounceAddr.email);
+  }
   if (buyer && !["bounce", "out_of_office"].includes(analysis.classification)) {
-    markReplied(input.from, buyer.id);
+    markReplied(from, buyer.id);
     db().prepare("UPDATE conversations SET state='replied', last_inbound_at=datetime('now'), updated_at=datetime('now') WHERE buyer_id=?").run(buyer.id);
     db().prepare(
       "UPDATE opportunities SET stage='response_captured', updated_at=datetime('now') WHERE buyer_id=? AND stage IN ('dry_run','executed','deferred','prepared','channel_selected')"

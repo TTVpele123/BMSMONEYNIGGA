@@ -1,8 +1,9 @@
+import { parseRecipient } from "./email/address";
+import { selectSendableLots } from "./email/attachments";
+import { sendAuthorizedEmail } from "./email/provider";
 import type { ChannelResult } from "./channels/types";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
 import { assertEligible, recordSend, reserveQueued } from "./ledger";
-import { selectOutreachMedia } from "./media";
-import { isSuppressed } from "./suppression";
 
 const DAILY_CAP = 20;
 const DOMAIN_CAP = 2;
@@ -37,23 +38,23 @@ export function composeMessage(input: {
   return { subject, body: lines.join("\n") };
 }
 
-function sentToday(): number {
+function liveSentToday(): number {
   const row = db().prepare(
-    "SELECT COUNT(*) AS n FROM outreach_attempts WHERE status IN ('sent','dry_run') AND created_at >= datetime('now','-1 day')"
+    "SELECT COUNT(*) AS n FROM outreach_attempts WHERE status='sent' AND created_at >= datetime('now','-1 day')"
   ).get() as { n: number };
   return row.n;
 }
 
-function sentToDomainToday(domain: string): number {
+function liveSentToDomainToday(domain: string): number {
   const row = db().prepare(
     `SELECT COUNT(*) AS n FROM outreach_attempts oa
      JOIN buyers b ON b.id=oa.buyer_id
-     WHERE b.domain=? AND oa.status IN ('sent','dry_run') AND oa.created_at >= datetime('now','-1 day')`
+     WHERE b.domain=? AND oa.status='sent' AND oa.created_at >= datetime('now','-1 day')`
   ).get(domain) as { n: number };
   return row.n;
 }
 
-export function guardedOutreach(input: {
+export async function guardedOutreach(input: {
   conversationId: number;
   buyerId: number;
   email: string;
@@ -63,87 +64,98 @@ export function guardedOutreach(input: {
   channel: string;
   idempotencyKey: string;
   composed?: { subject?: string; body: string };
-}): ChannelResult {
+}): Promise<ChannelResult> {
   const existing = db().prepare("SELECT id, status, reason FROM outreach_attempts WHERE idempotency_key=?").get(input.idempotencyKey) as
     | { id: number; status: string; reason: string } | undefined;
-  if (existing) return { ok: existing.status !== "failed" && existing.status !== "blocked", status: "duplicate", reason: `already ${existing.status}`, attemptId: existing.id };
+  const mode = outboundMode();
 
-  const logAttempt = (status: "logged" | "dry_run" | "sent" | "blocked" | "failed", reason: string, mediaHashes: string[], body: string, subject: string) => {
+  if (existing?.status === "sent") {
+    return { ok: true, status: "duplicate", reason: "already sent", attemptId: existing.id };
+  }
+  if (existing?.status === "dry_run" && mode === "dry_run") {
+    return { ok: true, status: "duplicate", reason: "already dry_run", attemptId: existing.id };
+  }
+  if (existing?.status === "blocked") {
+    return { ok: false, status: "duplicate", reason: `already ${existing.status}`, attemptId: existing.id };
+  }
+
+  const persist = (
+    status: "dry_run" | "sent" | "blocked" | "failed",
+    reason: string,
+    mediaHashes: string[],
+    body: string,
+    subject: string,
+    lotIds: number[],
+    providerMessageId?: string,
+  ): ChannelResult => {
+    if (existing?.status === "dry_run" && status !== "sent") {
+      return { ok: false, status, reason, attemptId: existing.id };
+    }
+    if (existing) {
+      db().prepare(
+        `UPDATE outreach_attempts SET status=?, reason=?, media_hashes=?, body=?, subject=?, lot_ids=?, provider_message_id=COALESCE(?, provider_message_id)
+         WHERE id=?`
+      ).run(status, reason, JSON.stringify(mediaHashes), body, subject, JSON.stringify(lotIds), providerMessageId ?? null, existing.id);
+      audit("outreach", `attempt_${status}`, {
+        entityType: "outreach_attempts",
+        entityId: existing.id,
+        ok: status !== "blocked" && status !== "failed",
+        detail: { reason, promoted: existing.status === "dry_run" },
+      });
+      return { ok: status === "dry_run" || status === "sent", status, reason, attemptId: existing.id };
+    }
     const info = db().prepare(
-      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key)
-       VALUES(?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
-      input.conversationId, input.buyerId, input.channel, JSON.stringify(input.lots.map((l) => l.id)),
-      subject, body, JSON.stringify(mediaHashes), status, reason, input.idempotencyKey,
+      input.conversationId, input.buyerId, input.channel, JSON.stringify(lotIds),
+      subject, body, JSON.stringify(mediaHashes), status, reason, input.idempotencyKey, providerMessageId ?? null,
     );
-    audit("outreach", `attempt_${status}`, { entityType: "outreach_attempts", entityId: Number(info.lastInsertRowid), ok: status !== "blocked" && status !== "failed", detail: { reason } });
-    return Number(info.lastInsertRowid);
+    const id = Number(info.lastInsertRowid);
+    audit("outreach", `attempt_${status}`, { entityType: "outreach_attempts", entityId: id, ok: status !== "blocked" && status !== "failed", detail: { reason } });
+    return { ok: status === "dry_run" || status === "sent", status, reason, attemptId: id };
   };
 
-  if (killSwitchOn()) {
-    const id = logAttempt("blocked", "kill switch", [], "", "");
-    return { ok: false, status: "blocked", reason: "kill switch", attemptId: id };
-  }
-  const sup = isSuppressed(input.email);
-  if (sup.suppressed) {
-    const id = logAttempt("blocked", `suppressed ${sup.matched}`, [], "", "");
-    return { ok: false, status: "blocked", reason: `suppressed (${sup.matched})`, attemptId: id };
-  }
-  if (input.lots.length < 1 || input.lots.length > 3) {
-    const id = logAttempt("blocked", "lot cap 1-3", [], "", "");
-    return { ok: false, status: "blocked", reason: "must attach 1-3 lots", attemptId: id };
-  }
-  if (sentToday() >= DAILY_CAP) {
-    const id = logAttempt("blocked", "daily cap", [], "", "");
-    return { ok: false, status: "blocked", reason: `daily cap ${DAILY_CAP}`, attemptId: id };
-  }
-  if (sentToDomainToday(input.domain) >= DOMAIN_CAP) {
-    const id = logAttempt("blocked", "domain cap", [], "", "");
-    return { ok: false, status: "blocked", reason: `domain cap ${DOMAIN_CAP}`, attemptId: id };
+  const to = parseRecipient(input.email);
+  if (!to.ok) return persist("blocked", to.reason, [], "", "", input.lots.map((l) => l.id));
+  if (killSwitchOn()) return persist("blocked", "kill switch", [], "", "", input.lots.map((l) => l.id));
+  if (input.lots.length < 1 || input.lots.length > 3) return persist("blocked", "must attach 1-3 lots", [], "", "", input.lots.map((l) => l.id));
+
+  const media = selectSendableLots(input.lots);
+  if (!media.ok) return persist("blocked", media.reason, [], "", "", input.lots.map((l) => l.id));
+  const lots = media.pick.lots;
+
+  for (const lot of lots) {
+    const gate = assertEligible(to.email, lot.id);
+    if (!gate.eligible) return persist("blocked", gate.reason, [], "", "", lots.map((l) => l.id));
   }
 
-  const mediaHashes: string[] = [];
-  for (const lot of input.lots) {
-    const gate = assertEligible(input.email, lot.id);
-    if (!gate.eligible) {
-      const id = logAttempt("blocked", gate.reason, [], "", "");
-      return { ok: false, status: "blocked", reason: gate.reason, attemptId: id };
-    }
-    const media = db().prepare(
-      "SELECT lot_id, sha256, path, classification, outreach_safe, association_certain FROM lot_media WHERE lot_id=?"
-    ).all(lot.id) as { lot_id: number; sha256: string; path: string; classification: string; outreach_safe: number; association_certain: number }[];
-    const safe = selectOutreachMedia(media.map((m) => ({ ...m, lot_id: m.lot_id })), lot.id);
-    const certain = safe.filter((m) => media.find((x) => x.sha256 === m.sha256)?.association_certain === 1);
-    if (certain.length === 0) {
-      const id = logAttempt("blocked", `no verified Oliver media for lot ${lot.id}`, [], "", "");
-      return { ok: false, status: "blocked", reason: `no verified Oliver media for lot ${lot.id}`, attemptId: id };
-    }
-    for (const m of certain) {
-      if (m.classification === "screenshot_chat_capture") {
-        const id = logAttempt("blocked", "chat screenshot rejected", [], "", "");
-        return { ok: false, status: "blocked", reason: "WhatsApp screenshots cannot be sent", attemptId: id };
-      }
-      mediaHashes.push(m.sha256);
-    }
+  if (mode === "live") {
+    if (liveSentToday() >= DAILY_CAP) return persist("blocked", `daily cap ${DAILY_CAP}`, media.pick.hashes, "", "", lots.map((l) => l.id));
+    if (liveSentToDomainToday(input.domain) >= DOMAIN_CAP) return persist("blocked", `domain cap ${DOMAIN_CAP}`, media.pick.hashes, "", "", lots.map((l) => l.id));
   }
 
-  const composed = input.composed ?? composeMessage({ company: input.company, lots: input.lots });
+  const composed = input.composed && media.pick.lots.length === input.lots.length
+    ? input.composed
+    : composeMessage({ company: input.company, lots });
   const subject = composed.subject ?? "";
   const body = composed.body;
-  for (const lot of input.lots) reserveQueued(input.email, lot.id, input.buyerId);
+  for (const lot of lots) reserveQueued(to.email, lot.id, input.buyerId);
 
-  const mode = outboundMode();
   if (mode === "dry_run") {
-    const id = logAttempt("dry_run", "dry_run — not sent", mediaHashes, body, subject);
-    return { ok: true, status: "dry_run", reason: "dry_run", attemptId: id };
+    return persist("dry_run", "dry_run — not sent", media.pick.hashes, body, subject, lots.map((l) => l.id));
   }
 
-  // Live send is a provider boundary. Without a connected mailbox this is a failure, not a silent success.
-  const id = logAttempt("failed", "live mode requires connected Gmail provider", mediaHashes, body, subject);
-  return { ok: false, status: "failed", reason: "live mode requires connected Gmail provider — tokens not configured", attemptId: id };
-}
-
-export function markLiveSent(attemptId: number, email: string, lotIds: number[], buyerId: number, providerMessageId: string): void {
-  db().prepare("UPDATE outreach_attempts SET status='sent', provider_message_id=?, reason='provider accepted' WHERE id=?").run(providerMessageId, attemptId);
-  for (const lotId of lotIds) recordSend(email, lotId, buyerId);
+  const sent = await sendAuthorizedEmail({
+    to: to.email,
+    subject,
+    body,
+    attachments: media.pick.attachments,
+  });
+  if (!sent.ok) {
+    return persist("failed", sent.error, media.pick.hashes, body, subject, lots.map((l) => l.id));
+  }
+  const result = persist("sent", "provider accepted", media.pick.hashes, body, subject, lots.map((l) => l.id), sent.id);
+  for (const lot of lots) recordSend(to.email, lot.id, input.buyerId);
+  return result;
 }

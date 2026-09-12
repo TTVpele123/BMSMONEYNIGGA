@@ -3,14 +3,14 @@ import { runMatching } from "./conversations";
 import { markFailed, markProcessed, unprocessedEvents, type EventType } from "./events";
 import { researchTick } from "./research";
 
-export function tick(): { processed: number; failed: number; details: string[] } {
+export async function tick(): Promise<{ processed: number; failed: number; details: string[] }> {
   const details: string[] = [];
   let processed = 0;
   let failed = 0;
   for (const ev of unprocessedEvents(80)) {
     try {
       const payload = JSON.parse(ev.payload) as Record<string, unknown>;
-      const result = handle(ev.type, payload);
+      const result = await handle(ev.type, payload);
       markProcessed(ev.id);
       processed += 1;
       details.push(`${ev.type}#${ev.id} ${JSON.stringify(result)}`);
@@ -25,7 +25,7 @@ export function tick(): { processed: number; failed: number; details: string[] }
   return { processed, failed, details };
 }
 
-function handle(type: EventType, payload: Record<string, unknown>): unknown {
+async function handle(type: EventType, payload: Record<string, unknown>): Promise<unknown> {
   switch (type) {
     case "lot.created":
     case "lot.updated":
@@ -55,12 +55,16 @@ let timer: NodeJS.Timeout | null = null;
 export function startScheduler(ms = 5 * 60 * 1000): void {
   if (timer || process.env.BMSM_DISABLE_SCHEDULER === "1") return;
   timer = setInterval(() => {
-    try {
-      researchTick();
-      tick();
-    } catch (err) {
-      audit("orchestrator", "scheduler_error", { ok: false, detail: { error: String(err) } });
-    }
+    void (async () => {
+      try {
+        researchTick();
+        await tick();
+        const { syncGmailInbox } = await import("./email/sync");
+        await syncGmailInbox();
+      } catch (err) {
+        audit("orchestrator", "scheduler_error", { ok: false, detail: { error: String(err) } });
+      }
+    })();
   }, ms);
 }
 

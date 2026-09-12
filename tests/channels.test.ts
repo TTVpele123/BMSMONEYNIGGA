@@ -49,7 +49,7 @@ describe("channel router", () => {
     expect(selectChannel(f)).toBeNull();
   });
 
-  it("defers non-email operators instead of executing them", () => {
+  it("defers non-email operators instead of executing them", async () => {
     const b = buyer("formonly.com");
     recordEndpoint({ buyerId: b, channel: "form", handle: "https://formonly.com/buy", confidence: 0.85, verified: true, source: "test" });
     const convo = db().prepare("INSERT INTO conversations(buyer_id,state,channel) VALUES(?,'idle','form')").run(b);
@@ -57,7 +57,7 @@ describe("channel router", () => {
     db().prepare("INSERT INTO lots(external_key,title,category,state) VALUES('ch-1','tees','apparel-licensed','matchable')").run();
     const lot = db().prepare("SELECT id FROM lots WHERE external_key='ch-1'").get() as { id: number };
     const oppId = createOpportunity({ buyerId: b, conversationId: convoId, lotIds: [lot.id] });
-    const result = dispatchOpportunity({
+    const result = await dispatchOpportunity({
       opportunityId: oppId,
       conversationId: convoId,
       buyerId: b,

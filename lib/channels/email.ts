@@ -1,5 +1,5 @@
 import { composeMessage, guardedOutreach } from "../outreach";
-import type { ChannelOperator, ChannelResult, OpportunityContext, PreparedOutreach } from "./types";
+import type { ChannelOperator } from "./types";
 
 export const emailOperator: ChannelOperator = {
   id: "email",
@@ -8,7 +8,7 @@ export const emailOperator: ChannelOperator = {
   compose(ctx) {
     return composeMessage({ company: ctx.company, lots: ctx.lots });
   },
-  execute(ctx, prepared): ChannelResult {
+  execute(ctx, prepared) {
     return guardedOutreach({
       conversationId: ctx.conversationId,
       buyerId: ctx.buyerId,

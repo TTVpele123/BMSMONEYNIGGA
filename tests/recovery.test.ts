@@ -4,22 +4,22 @@ import { emit, markFailed, unprocessedEvents } from "../lib/events";
 import { tick } from "../lib/orchestrator";
 
 describe("queue recovery", () => {
-  it("retries failed handlers and dead-letters after 5 failures", () => {
+  it("retries failed handlers and dead-letters after 5 failures", async () => {
     const id = emit("match.requested", { lotId: 999999 }, "retry-missing-lot");
     // handler throws because lot missing? runMatching returns {0,0} without throw.
     // Force a poison event type via direct SQL.
     db().prepare("UPDATE events SET type='not.a.real.event' WHERE id=?").run(id);
-    for (let i = 0; i < 5; i++) tick();
+    for (let i = 0; i < 5; i++) await tick();
     const row = db().prepare("SELECT processed_at, attempts, last_error FROM events WHERE id=?").get(id) as { processed_at: string | null; attempts: number; last_error: string };
     expect(row.attempts).toBeGreaterThanOrEqual(5);
     expect(row.processed_at).not.toBeNull();
     expect(row.last_error).toMatch(/unknown event/);
   });
 
-  it("does not reprocess completed events", () => {
+  it("does not reprocess completed events", async () => {
     emit("research.tick", { queued: 0 }, "once");
-    const a = tick();
-    const b = tick();
+    const a = await tick();
+    const b = await tick();
     expect(a.processed).toBeGreaterThanOrEqual(1);
     expect(b.processed).toBe(0);
     expect(unprocessedEvents().length).toBe(0);

@@ -3,6 +3,6 @@ import { researchTick } from "@/lib/research";
 
 export async function POST() {
   const research = researchTick();
-  const orch = tick();
+  const orch = await tick();
   return Response.json({ ok: true, research, orch, heartbeat: heartbeat() });
 }

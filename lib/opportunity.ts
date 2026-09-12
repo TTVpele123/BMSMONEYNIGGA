@@ -24,14 +24,14 @@ function setStage(id: number, stage: OpportunityStage, reason?: string, channel?
   ).run(stage, reason ?? null, channel ?? null, handle ?? null, id);
 }
 
-export function dispatchOpportunity(input: {
+export async function dispatchOpportunity(input: {
   opportunityId: number;
   conversationId: number;
   buyerId: number;
   company: string;
   domain: string;
   lots: LotBrief[];
-}): { channel: string | null; status: string; reason: string } {
+}): Promise<{ channel: string | null; status: string; reason: string }> {
   const selected = selectChannel(input.buyerId);
   if (!selected) {
     setStage(input.opportunityId, "blocked", "no legitimate channel endpoint");
@@ -57,12 +57,13 @@ export function dispatchOpportunity(input: {
   const prepared = { channel: endpoint.channel, handle: endpoint.handle, subject: composed.subject, body: composed.body, mediaHashes: [] as string[] };
   setStage(input.opportunityId, "prepared", "composed");
 
-  const result = operator.execute(ctx, prepared);
+  const result = await Promise.resolve(operator.execute(ctx, prepared));
 
   if (result.status === "dry_run") setStage(input.opportunityId, "dry_run", result.reason);
   else if (result.status === "sent") setStage(input.opportunityId, "executed", result.reason);
   else if (result.status === "deferred") setStage(input.opportunityId, "deferred", result.reason);
   else if (result.status === "blocked" || result.status === "failed") setStage(input.opportunityId, "blocked", result.reason);
+  else if (result.status === "duplicate" && result.reason === "already sent") setStage(input.opportunityId, "executed", result.reason);
   else if (result.status === "duplicate") setStage(input.opportunityId, "dry_run", result.reason);
 
   audit("opportunity", `dispatch_${result.status}`, {

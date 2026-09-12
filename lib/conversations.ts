@@ -19,7 +19,7 @@ export function attachLots(conversationId: number, lotIds: number[]): void {
   });
 }
 
-export function runMatching(lotId: number): { matches: number; queued: number } {
+export async function runMatching(lotId: number): Promise<{ matches: number; queued: number }> {
   const lot = db().prepare("SELECT id, category, quantity, unit_price, total_price, title, brand FROM lots WHERE id=?").get(lotId) as
     | { id: number; category: string; quantity: number | null; unit_price: number | null; total_price: number | null; title: string; brand: string | null }
     | undefined;
@@ -76,7 +76,7 @@ export function runMatching(lotId: number): { matches: number; queued: number } 
     ).all(...topLots) as { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
 
     const oppId = createOpportunity({ buyerId: buyer.id, conversationId: convoId, lotIds: topLots });
-    const dispatched = dispatchOpportunity({
+    const dispatched = await dispatchOpportunity({
       opportunityId: oppId,
       conversationId: convoId,
       buyerId: buyer.id,

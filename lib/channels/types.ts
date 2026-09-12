@@ -72,5 +72,5 @@ export interface ChannelOperator {
   liveExecution: boolean;
   requiresHumanApproval: boolean;
   compose(ctx: OpportunityContext): { subject?: string; body: string };
-  execute(ctx: OpportunityContext, prepared: PreparedOutreach): ChannelResult;
+  execute(ctx: OpportunityContext, prepared: PreparedOutreach): ChannelResult | Promise<ChannelResult>;
 }

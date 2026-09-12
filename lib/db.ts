@@ -68,8 +68,10 @@ export function audit(actor: string, action: string, opts: {
 }
 
 export function outboundMode(): "dry_run" | "live" {
-  const v = (process.env.OUTBOUND_MODE ?? getSetting("outbound_mode", "dry_run")).toLowerCase();
-  return v === "live" ? "live" : "dry_run";
+  const setting = getSetting("outbound_mode", "").toLowerCase();
+  if (setting === "live" || setting === "dry_run") return setting;
+  const env = (process.env.OUTBOUND_MODE ?? "dry_run").toLowerCase();
+  return env === "live" ? "live" : "dry_run";
 }
 
 export function killSwitchOn(): boolean {
