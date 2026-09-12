@@ -2,8 +2,9 @@ import { z } from "zod";
 import { recordEndpoint } from "@/lib/channels/select";
 import type { ChannelId } from "@/lib/channels/types";
 import { CHANNEL_IDS } from "@/lib/channels/types";
-import { enrollBuyer, recordMandate } from "@/lib/research";
 import { audit } from "@/lib/db";
+import { emit } from "@/lib/events";
+import { enrollBuyer, lotEligibleForResearch, recordMandate } from "@/lib/research";
 
 const Finding = z.object({
   agent: z.string(),
@@ -74,6 +75,9 @@ export async function POST(req: Request) {
         });
       }
       enrolled.push(buyerId);
+    }
+    if (body.lotId != null && lotEligibleForResearch(body.lotId)) {
+      emit("match.requested", { lotId: body.lotId }, `match.requested:findings:${body.lotId}:${enrolled.join(",") || "none"}`);
     }
     audit("research", "findings_ingested", { detail: { agent: body.agent, lotId: body.lotId, buyers: enrolled, skippedGuessedEmails } });
     return Response.json({ ok: true, buyerIds: enrolled, skippedGuessedEmails });
