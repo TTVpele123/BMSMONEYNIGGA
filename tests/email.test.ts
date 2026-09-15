@@ -4,12 +4,14 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { recordEndpoint, selectChannel } from "../lib/channels/select";
 import { db, outboundMode, setSetting } from "../lib/db";
-import { AUTHORIZED_SENDER, DENIED_SENDER, assertAuthorizedSender, parseRecipient } from "../lib/email/address";
+import { AUTHORIZED_SENDER, DENIED_SENDER, PREVIOUS_SENDER, assertAuthorizedSender, extractBuyerEmail, parseRecipient } from "../lib/email/address";
 import { selectSendableLots } from "../lib/email/attachments";
 import { buildRawMessage } from "../lib/email/mime";
-import { setGmailClient, type GmailClient, type GmailSendInput } from "../lib/email/provider";
+import { sendAuthorizedEmail, setGmailClient, type GmailClient, type GmailSendInput } from "../lib/email/provider";
+import { extractFailedRecipient, inboxBounceFlags } from "../lib/email/bounce";
 import { syncGmailInbox } from "../lib/email/sync";
-import { GMAIL_SCOPES, tokenPath } from "../lib/email/tokens";
+import { gmailAuthorizationUrl } from "../lib/email/oauth";
+import { GMAIL_LEGACY_INBOUND_SCOPES, GMAIL_SCOPES, legacyTokenPath, loadLegacyTokens, loadTokens, saveLegacyTokens, saveTokens, tokenPath } from "../lib/email/tokens";
 import { processInbound } from "../lib/inbound";
 import { ingestWhatsApp } from "../lib/intake";
 import { guardedOutreach } from "../lib/outreach";
@@ -87,7 +89,7 @@ describe("1 Gmail provider + MIME + From lock", () => {
       }],
     });
     const decoded = Buffer.from(raw, "base64url").toString("utf8");
-    expect(decoded).toContain(`From: ${AUTHORIZED_SENDER}`);
+    expect(decoded).toContain(`From: Bailey Saevitzon <${AUTHORIZED_SENDER}>`);
     expect(decoded).toContain("To: buy@fitco.com");
     expect(decoded).toContain("Content-ID: <lot-54-abc123>");
     expect(decoded).toContain("Content-Disposition: inline");
@@ -104,6 +106,36 @@ describe("1 Gmail provider + MIME + From lock", () => {
       "https://www.googleapis.com/auth/gmail.readonly",
     ]);
     expect(tokenPath()).toMatch(/gmail-oauth\.enc$/);
+    expect(legacyTokenPath()).toMatch(/gmail-oauth-legacy\.enc$/);
+    const legacyUrl = gmailAuthorizationUrl("state-legacy", "legacy_inbound");
+    expect(legacyUrl).toContain(encodeURIComponent(PREVIOUS_SENDER));
+    expect(legacyUrl).toContain(encodeURIComponent(GMAIL_LEGACY_INBOUND_SCOPES[0]));
+    expect(legacyUrl).not.toContain("gmail.send");
+    expect(() => saveTokens({
+      address: PREVIOUS_SENDER,
+      refresh_token: "x",
+      access_token: "y",
+      expiry: new Date().toISOString(),
+      scopes: [...GMAIL_SCOPES],
+    })).toThrow(/refusing to store send tokens/);
+    saveTokens({
+      address: AUTHORIZED_SENDER,
+      refresh_token: "send-rt",
+      access_token: "send-at",
+      expiry: new Date(Date.now() + 60_000).toISOString(),
+      scopes: [...GMAIL_SCOPES],
+    });
+    saveLegacyTokens({
+      address: PREVIOUS_SENDER,
+      refresh_token: "leg-rt",
+      access_token: "leg-at",
+      expiry: new Date(Date.now() + 60_000).toISOString(),
+      scopes: [...GMAIL_LEGACY_INBOUND_SCOPES],
+    });
+    expect(loadTokens()?.address).toBe(AUTHORIZED_SENDER);
+    expect(loadLegacyTokens()?.address).toBe(PREVIOUS_SENDER);
+    expect(loadTokens()?.refresh_token).toBe("send-rt");
+    expect(loadLegacyTokens()?.refresh_token).toBe("leg-rt");
   });
 
   it("refuses live send when authenticated identity is not the authorized mailbox", async () => {
@@ -119,6 +151,21 @@ describe("1 Gmail provider + MIME + From lock", () => {
     expect(result.status).toBe("failed");
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/not authorized|banned/);
+  });
+
+  it("refuses live send when authenticated as the legacy Saefam mailbox", async () => {
+    const lot = seedLot("Saefam lock tees", true);
+    const buyerId = seedBuyer("saefamlock.com");
+    const conversationId = convo(buyerId, "buy@saefamlock.com");
+    setSetting("outbound_mode", "live");
+    mockGmail({ profile: async () => ({ emailAddress: PREVIOUS_SENDER }) });
+    const result = await guardedOutreach({
+      conversationId, buyerId, email: "buy@saefamlock.com", domain: "saefamlock.com",
+      company: "Lock", lots: [lot], channel: "email", idempotencyKey: "saefam-ident-1",
+    });
+    expect(result.status).toBe("failed");
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/not authorized|banned|From must be/);
   });
 });
 
@@ -162,7 +209,7 @@ describe("2 Gmail inbox sync", () => {
     const synced = await syncGmailInbox();
     expect(synced.ok).toBe(true);
     expect(synced.ingested).toBe(3);
-    const reply = processInbound({ from: "buy@inboxco.com", text: "dup", providerMessageId: "g-reply" });
+    const reply = await processInbound({ from: "buy@inboxco.com", text: "dup", providerMessageId: "g-reply" });
     expect(reply.classification).toBe("duplicate");
     const inbound = db().prepare("SELECT classification, phone, from_address FROM inbound_events ORDER BY id").all() as Array<{
       classification: string; phone: string | null; from_address: string;
@@ -174,6 +221,117 @@ describe("2 Gmail inbox sync", () => {
     expect(isSuppressed("buy@bounceco.com").suppressed).toBe(true);
     expect(isSuppressed("alive@bounceco.com").suppressed).toBe(false);
     expect(db().prepare("SELECT value FROM settings WHERE key='gmail_history_id'").get() as { value: string }).toEqual({ value: "99" });
+  });
+
+  it("ingests legacy Saefam inbox replies through the same inbound pipeline", async () => {
+    seedBuyer("legacyreply.com");
+    mockGmail({
+      listInbox: async () => ({ historyId: "200", messages: [] }),
+      listLegacyInbox: async () => ({
+        historyId: "L-7",
+        messages: [{
+          providerMessageId: "g-legacy-phone",
+          from: "Buyer <buy@legacyreply.com>",
+          to: PREVIOUS_SENDER,
+          subject: "Re: Wholesale availability",
+          text: "Interested. My mobile is 415-555-0199.",
+          bounced: false,
+        }],
+      }),
+    });
+    const synced = await syncGmailInbox();
+    expect(synced.ok).toBe(true);
+    expect(synced.ingested).toBe(1);
+    const row = db().prepare(
+      "SELECT classification, phone, from_address FROM inbound_events WHERE provider_message_id='g-legacy-phone'"
+    ).get() as { classification: string; phone: string | null; from_address: string };
+    expect(row.classification).toBe("positive_interest");
+    expect(row.phone).toContain("415");
+    expect(row.from_address).toBe("buy@legacyreply.com");
+    expect(db().prepare("SELECT value FROM settings WHERE key='gmail_legacy_history_id'").get() as { value: string }).toEqual({ value: "L-7" });
+  });
+
+  it("extracts the failed recipient from a DSN body and rematches another inbox", async () => {
+    const bounced = seedBuyer("dsnco.com", "dead@dsnco.com");
+    db().prepare("INSERT INTO buyer_contacts(buyer_id,email,verification) VALUES(?,'alive@dsnco.com','verified')").run(bounced);
+    recordEndpoint({ buyerId: bounced, channel: "email", handle: "alive@dsnco.com", confidence: 0.9, verified: true });
+    const lot = seedLot("DSN tees", true);
+    db().prepare(
+      `INSERT INTO match_scores(lot_id,buyer_id,score,bucket,capacity_score,product_fit_score,geography_score,history_score,contact_score,rationale)
+       VALUES(?,?,0.7,'explicit',1,1,1,0,1,'test')`
+    ).run(lot.id, bounced);
+
+    const dsn = [
+      "Delivery Status Notification (Failure)",
+      "Final-Recipient: rfc822; dead@dsnco.com",
+      "Action: failed",
+      "Status: 5.1.1",
+      "550 5.1.1 The email account that you tried to reach does not exist.",
+    ].join("\n");
+    mockGmail({
+      listInbox: async () => ({
+        historyId: "100",
+        messages: [{
+          providerMessageId: "g-dsn-body",
+          from: "Mail Delivery Subsystem <mailer-daemon@google.com>",
+          to: AUTHORIZED_SENDER,
+          subject: "Delivery Status Notification (Failure)",
+          text: dsn,
+          bounced: true,
+        }],
+      }),
+    });
+    const synced = await syncGmailInbox();
+    expect(synced.ok).toBe(true);
+    expect(synced.ingested).toBe(1);
+    expect(isSuppressed("dead@dsnco.com").suppressed).toBe(true);
+    expect(isSuppressed("alive@dsnco.com").suppressed).toBe(false);
+    expect(isSuppressed("other@dsnco.com").suppressed).toBe(false);
+    expect(isSuppressed("dsnco.com").suppressed).toBe(false);
+    expect(
+      (db().prepare("SELECT verification FROM buyer_contacts WHERE email='dead@dsnco.com'").get() as { verification: string }).verification
+    ).toBe("bounced");
+    expect(selectChannel(bounced)?.endpoint.handle).toBe("alive@dsnco.com");
+    const rematch = db().prepare(
+      "SELECT id FROM events WHERE type='match.requested' AND idempotency_key=?"
+    ).get(`match.requested:bounce:${bounced}:${lot.id}`) as { id: number } | undefined;
+    expect(rematch).toBeTruthy();
+    recordEndpoint({ buyerId: bounced, channel: "email", handle: "dead@dsnco.com", confidence: 0.99, verified: true });
+    expect(selectChannel(bounced)?.endpoint.handle).toBe("alive@dsnco.com");
+  });
+
+  it("does not treat a buyer reply with emails in the thread as a bounce", () => {
+    const text = [
+      "Here is the information.",
+      "",
+      "Jonathan Tala +1 (310) 402-4554",
+      "Mira Basilio",
+      "Joniclo LLC, Executive Assistant",
+      "mira@joniclo.com",
+      "",
+      "From: Bailey Saevitzon <saefamoverstock@gmail.com>",
+      "To: Mira B <mira@joniclo.com>",
+      "Subject: Re: Wholesale availability — Hoodies",
+      "What's the best phone number to reach you at?",
+    ].join("\n");
+    expect(inboxBounceFlags({ text, from: "mira@joniclo.com", subject: "Re: Wholesale availability — Hoodies" })).toEqual({
+      bounced: false,
+    });
+    expect(inboxBounceFlags({
+      text: "550 address not found",
+      from: "mailer-daemon@google.com",
+      subject: "Delivery Status Notification (Failure)",
+      failedHeader: "dead@dsnco.com",
+    })).toMatchObject({ bounced: true, failedRecipient: "dead@dsnco.com" });
+  });
+
+  it("pulls the failed inbox out of an Exchange mailto bounce", () => {
+    const text = [
+      "Delivery has failed to these recipients or groups:",
+      "cwalker@marshallretailgroup.com<mailto:cwalker@marshallretailgroup.com>",
+      "The recipient's mailbox is full and can't accept messages now.",
+    ].join("\n");
+    expect(extractFailedRecipient(text, "postmaster@marshallretailgroup.com")).toBe("cwalker@marshallretailgroup.com");
   });
 });
 
@@ -285,7 +443,7 @@ describe("6 From lock at send time", () => {
       body: sent[0].body,
       attachments: sent[0].attachments,
     });
-    expect(Buffer.from(mime, "base64url").toString("utf8")).toContain(`From: ${AUTHORIZED_SENDER}`);
+    expect(Buffer.from(mime, "base64url").toString("utf8")).toContain(`From: Bailey Saevitzon <${AUTHORIZED_SENDER}>`);
     expect(assertAuthorizedSender("bailey@berkeley.edu").ok).toBe(false);
   });
 });
@@ -327,10 +485,13 @@ describe("7 media gating subset", () => {
 describe("8 To: address normalization", () => {
   it("rejects phone/URL/blob handles before Gmail and skips them as endpoints", async () => {
     expect(parseRecipient("sales@x.com; 555-123-4567; https://x.com").ok).toBe(false);
+    expect(extractBuyerEmail("sales@x.com; 555-123-4567; https://x.com")).toEqual({ ok: true, email: "sales@x.com" });
+    expect(extractBuyerEmail("buy@a.com; buy@b.com").ok).toBe(false);
     expect(parseRecipient("sales@x.com 5551234567").ok).toBe(false);
     expect(parseRecipient("https://acme.com/contact").ok).toBe(false);
     expect(parseRecipient("Fit Co <buy@fitco.com>").ok).toBe(true);
     expect(parseRecipient(AUTHORIZED_SENDER).ok).toBe(false);
+    expect(parseRecipient(PREVIOUS_SENDER).ok).toBe(false);
 
     const lot = seedLot("Blob tees", true);
     const buyerId = seedBuyer("blobco.com");
@@ -350,6 +511,31 @@ describe("8 To: address normalization", () => {
     const messy = seedBuyer("messy.com");
     db().prepare("UPDATE buyer_contacts SET email=? WHERE buyer_id=?").run("sales@messy.com; 818-406-8612; https://messy.com", messy);
     recordEndpoint({ buyerId: messy, channel: "email", handle: "sales@messy.com; phone; https://x.com", confidence: 0.9, verified: true });
-    expect(selectChannel(messy)).toBeNull();
+    const picked = selectChannel(messy);
+    expect(picked?.endpoint.handle).toBe("sales@messy.com");
+    expect(picked?.endpoint.channel).toBe("email");
+  });
+
+  it("does not call Gmail send before the provider Retry-After instant", async () => {
+    const sent: GmailSendInput[] = [];
+    setGmailClient({
+      profile: async () => ({ emailAddress: AUTHORIZED_SENDER }),
+      send: async (input) => { sent.push(input); return { ok: true, id: "should-not-fire" }; },
+      listInbox: async () => ({ messages: [], historyId: null }),
+    });
+    setSetting("outbound_mode", "live");
+    const buyerId = seedBuyer("cooldown.com");
+    const convoId = Number(db().prepare("INSERT INTO conversations(buyer_id,state,channel,contact_email) VALUES(?,'idle','email',?)").run(buyerId, "buy@cooldown.com").lastInsertRowid);
+    const until = new Date(Date.now() + 60_000).toISOString();
+    db().prepare(
+      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key)
+       VALUES(?,?,'email','[]','','','[]','failed',?,'cooldown-test')`
+    ).run(convoId, buyerId, `gmail send 429: Retry after ${until} (Mail sending)`);
+    const r = await sendAuthorizedEmail({
+      to: "buy@cooldown.com", subject: "x", body: "y", attachments: [], domain: "cooldown.com",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/gmail 429 cooldown until/);
+    expect(sent).toHaveLength(0);
   });
 });

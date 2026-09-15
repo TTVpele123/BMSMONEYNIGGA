@@ -1,7 +1,19 @@
 export const AUTHORIZED_SENDER = "saevitzonoverstock@gmail.com";
-export const DENIED_SENDER = "saefamoverstock@gmail.com";
+export const PREVIOUS_SENDER = "saefamoverstock@gmail.com";
+export const DENIED_SENDER = "bailey@berkeley.edu";
+
+const OUR_MAILBOXES = new Set([AUTHORIZED_SENDER, PREVIOUS_SENDER]);
 
 const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+
+export function isOurMailbox(address: string): boolean {
+  return OUR_MAILBOXES.has(address.trim().toLowerCase());
+}
+
+export function isDeniedSender(address: string): boolean {
+  const v = address.trim().toLowerCase();
+  return v === DENIED_SENDER || v.endsWith("@berkeley.edu");
+}
 
 export function parseRecipient(raw: string): { ok: true; email: string } | { ok: false; reason: string } {
   const text = (raw ?? "").trim();
@@ -15,8 +27,22 @@ export function parseRecipient(raw: string): { ok: true; email: string } | { ok:
   const email = unique[0];
   const leftover = text.replace(new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig"), "");
   if ((leftover.match(/\d/g) ?? []).length >= 7) return { ok: false, reason: "recipient handle contains a phone number" };
-  if (email === DENIED_SENDER) return { ok: false, reason: "denied mailbox" };
-  if (email === AUTHORIZED_SENDER) return { ok: false, reason: "cannot send to our own mailbox as a buyer" };
+  if (isDeniedSender(email)) return { ok: false, reason: "denied mailbox" };
+  if (isOurMailbox(email)) return { ok: false, reason: "cannot send to our own mailbox as a buyer" };
+  return { ok: true, email };
+}
+
+/** Pull the single evidenced mailbox out of research notes. Never guesses when two addresses are present. */
+export function extractBuyerEmail(raw: string): { ok: true; email: string } | { ok: false; reason: string } {
+  const text = (raw ?? "").trim();
+  if (!text) return { ok: false, reason: "empty recipient" };
+  const matches = text.match(EMAIL_RE) ?? [];
+  const unique = [...new Set(matches.map((e) => e.toLowerCase()))];
+  if (unique.length === 0) return { ok: false, reason: "no email address in handle" };
+  if (unique.length > 1) return { ok: false, reason: "multiple emails in handle" };
+  const email = unique[0];
+  if (isDeniedSender(email)) return { ok: false, reason: "denied mailbox" };
+  if (isOurMailbox(email)) return { ok: false, reason: "cannot send to our own mailbox as a buyer" };
   return { ok: true, email };
 }
 
@@ -27,7 +53,7 @@ export function parseFromHeader(raw: string): string {
 
 export function assertAuthorizedSender(address: string): { ok: true } | { ok: false; reason: string } {
   const v = address.trim().toLowerCase();
-  if (v === DENIED_SENDER) return { ok: false, reason: `${address} is banned from automation` };
+  if (isDeniedSender(v)) return { ok: false, reason: `${address} is banned from automation` };
   if (v !== AUTHORIZED_SENDER) return { ok: false, reason: `From must be ${AUTHORIZED_SENDER}` };
   return { ok: true };
 }

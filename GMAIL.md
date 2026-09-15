@@ -1,6 +1,6 @@
 # Gmail — `saevitzonoverstock@gmail.com`
 
-Authorized mailbox only. `saefamoverstock@gmail.com` is banned and will be rejected at send time.
+Authorized mailbox only. `saefamoverstock@gmail.com` is capped and must not be the live sender. Berkeley and personal mailboxes are refused at send time.
 
 Default outbound mode is **`dry_run`**. Connecting Gmail does **not** send mail. `./start.sh` does **not** export `OUTBOUND_MODE`; runtime mode is `settings.outbound_mode` (seeded `dry_run`). Flip live only via `POST /api/killswitch` after a stared-at dry-run.
 
@@ -44,6 +44,17 @@ Dry-run and matching work with all Gmail vars empty.
 
 Tokens for any other address are refused.
 
+## Legacy inbound (read-only)
+
+`saefamoverstock@gmail.com` stays connected for replies to older threads. It **cannot send**.
+
+- Token path: `~/.bmsmoneynigga/data/gmail-oauth-legacy.enc`
+- Scopes: `gmail.readonly` only
+- Connect: `http://localhost:3222/api/gmail/oauth/start?mailbox=legacy`
+- Sign in as **`saefamoverstock@gmail.com`** (not Berkeley, not personal, not the live sender)
+- History cursor: `settings.gmail_legacy_history_id`
+- Sync still calls `processInbound` on every ingested message
+
 ## Authenticate (manual, after this commit)
 
 1. In Google Cloud, reuse the existing OAuth client (or create a Desktop/Web client).
@@ -52,10 +63,11 @@ Tokens for any other address are refused.
 4. Restart `./start.sh` (still dry_run).
 5. Confirm `GET http://localhost:3222/api/gmail/status` shows `oauth_client: true` and `connected: false`.
 6. In a browser, open `http://localhost:3222/api/gmail/oauth/start`.
-7. Sign in as **`saevitzonoverstock@gmail.com`** (not saefam, not personal). Grant send + readonly.
+7. Sign in as **`saevitzonoverstock@gmail.com`** (not Berkeley, not personal, not the capped Saefam mailbox). Grant send + readonly.
 8. You should land on a “Gmail connected” page. If you authenticated as anyone else, tokens are not saved.
 9. Re-check `/api/gmail/status` — `connected: true`, `address` matches the authorized mailbox.
-10. Leave `outbound_mode` on `dry_run`. Inbox sync (`POST /api/gmail/sync` and the 5-minute scheduler) can run; it only writes inbound events.
+10. Connect the legacy inbox: open `/api/gmail/oauth/start?mailbox=legacy` and sign in as `saefamoverstock@gmail.com`. Status should show `legacy_inbound.connected: true` and `legacy_inbound.send: false`.
+11. Leave `outbound_mode` on `dry_run`. Inbox sync (`POST /api/gmail/sync` and the 5-minute scheduler) reads both inboxes; it only writes inbound events.
 
 Do **not** flip live until you have reviewed a dry-run body + media hashes for the lots you intend to send.
 

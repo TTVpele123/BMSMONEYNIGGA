@@ -5,10 +5,11 @@ import { describe, expect, it } from "vitest";
 import { runMatching } from "../lib/conversations";
 import { db, setSetting } from "../lib/db";
 import { lotHasSendableMedia } from "../lib/email/attachments";
+import { AUTHORIZED_SENDER } from "../lib/email/address";
 import { setGmailClient } from "../lib/email/provider";
 import { ingestWhatsApp } from "../lib/intake";
 import { researchCoverage } from "../lib/metrics";
-import { guardedOutreach } from "../lib/outreach";
+import { guardedOutreach, LIVE_DAILY_CAP, LIVE_DOMAIN_CAP } from "../lib/outreach";
 import { isCapacityReason, pauseLotsMissingOriginalMedia, repairStaleDailyCapBlocks } from "../lib/repairs";
 import { enrollBuyer, recordMandate, researchTick } from "../lib/research";
 import { writeTestPng } from "./png";
@@ -115,17 +116,18 @@ describe("P0 #1 capacity blocks are retryable", () => {
     expect((db().prepare("SELECT status FROM outreach_attempts WHERE idempotency_key='pre-repair-1'").get() as { status: string }).status).toBe("dry_run");
   });
 
-  it("does not permanently block when live daily cap is hit", async () => {
+  it("defers on domain cap without permanent block; daily volume uncapped", async () => {
     const lot = seedLot("Live cap tees", true);
     const buyerId = seedBuyer("livecap.com");
     const conversationId = convo(buyerId, "buy@livecap.com");
     setSetting("outbound_mode", "live");
     setGmailClient({
-      profile: async () => ({ emailAddress: "saevitzonoverstock@gmail.com" }),
+      profile: async () => ({ emailAddress: AUTHORIZED_SENDER }),
       send: async () => ({ ok: true, id: "g1" }),
       listInbox: async () => ({ messages: [], historyId: "1" }),
     });
-    for (let i = 0; i < 20; i++) {
+    expect(LIVE_DAILY_CAP).toBeNull();
+    for (let i = 0; i < LIVE_DOMAIN_CAP; i++) {
       db().prepare(
         `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)
          VALUES(?,?,?,'[]','','','[]','sent','provider accepted',?,?)`
@@ -133,20 +135,11 @@ describe("P0 #1 capacity blocks are retryable", () => {
     }
     const hit = await guardedOutreach({
       conversationId, buyerId, email: "buy@livecap.com", domain: "livecap.com",
-      company: "LiveCap", lots: [lot], channel: "email", idempotencyKey: "cap-hit-1",
+      company: "LiveCap", lots: [lot], channel: "email", idempotencyKey: "domain-over",
     });
     expect(hit.status).toBe("deferred");
-    expect(hit.reason).toMatch(/daily cap/);
-    const row = db().prepare("SELECT status FROM outreach_attempts WHERE idempotency_key='cap-hit-1'").get() as { status: string };
-    expect(row.status).toBe("failed");
-
-    db().prepare("DELETE FROM outreach_attempts WHERE status='sent' AND idempotency_key LIKE 'prior-sent-%'").run();
-    const retried = await guardedOutreach({
-      conversationId, buyerId, email: "buy@livecap.com", domain: "livecap.com",
-      company: "LiveCap", lots: [lot], channel: "email", idempotencyKey: "cap-hit-1",
-    });
-    expect(retried.status).toBe("sent");
-    expect(retried.attemptId).toBe(hit.attemptId);
+    expect(hit.reason).toMatch(/domain cap/);
+    expect(isCapacityReason(hit.reason)).toBe(true);
   });
 });
 

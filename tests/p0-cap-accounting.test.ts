@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { db, setSetting } from "../lib/db";
+import { AUTHORIZED_SENDER } from "../lib/email/address";
 import { setGmailClient } from "../lib/email/provider";
 import { ingestWhatsApp } from "../lib/intake";
 import { guardedOutreach, LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSendCapacity, liveSentToday, liveSentToDomainToday } from "../lib/outreach";
@@ -83,7 +84,8 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     expect(liveSentToDomainToday("unsentcap.com")).toBe(0);
     const cap = liveSendCapacity("unsentcap.com");
     expect(cap.dailyUsed).toBe(0);
-    expect(cap.dailyRemaining).toBe(LIVE_DAILY_CAP);
+    expect(cap.dailyCap).toBe(LIVE_DAILY_CAP);
+    expect(cap.dailyRemaining).toBe(LIVE_DAILY_CAP == null ? null : LIVE_DAILY_CAP);
     expect(cap.domainUsed).toBe(0);
     expect(cap.domainRemaining).toBe(LIVE_DOMAIN_CAP);
     expect(repairUnconfirmedSentAccounting()).toEqual({ unconfirmedSent: 1, confirmedSent: 0 });
@@ -92,7 +94,7 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     setSetting("outbound_mode", "live");
     const sent: string[] = [];
     setGmailClient({
-      profile: async () => ({ emailAddress: "saevitzonoverstock@gmail.com" }),
+      profile: async () => ({ emailAddress: AUTHORIZED_SENDER }),
       send: async () => {
         sent.push("ok");
         return { ok: true, id: `gmail-${sent.length}` };
@@ -105,10 +107,15 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     });
     expect(live.status).toBe("sent");
     expect(sent).toHaveLength(1);
-    expect(liveSendCapacity("unsentcap.com")).toMatchObject({ dailyUsed: 1, dailyRemaining: 19, domainUsed: 1, domainRemaining: 1 });
+    expect(liveSendCapacity("unsentcap.com")).toMatchObject({
+      dailyUsed: 1,
+      dailyRemaining: LIVE_DAILY_CAP == null ? null : LIVE_DAILY_CAP - 1,
+      domainUsed: 1,
+      domainRemaining: 1,
+    });
   });
 
-  it("lets confirmed live sends exhaust daily and domain caps", async () => {
+  it("lets confirmed live sends exhaust domain cap; daily volume is uncapped", async () => {
     const lotA = seedLot("Confirmed A");
     const lotB = seedLot("Confirmed B");
     const lotC = seedLot("Confirmed C");
@@ -117,7 +124,7 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     setSetting("outbound_mode", "live");
     let n = 0;
     setGmailClient({
-      profile: async () => ({ emailAddress: "saevitzonoverstock@gmail.com" }),
+      profile: async () => ({ emailAddress: AUTHORIZED_SENDER }),
       send: async () => ({ ok: true, id: `gmail-real-${++n}` }),
       listInbox: async () => ({ messages: [], historyId: "1" }),
     });
@@ -140,26 +147,17 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     expect(blockedDomain.status).toBe("deferred");
     expect(blockedDomain.reason).toMatch(/domain cap/);
 
+    // Artificial daily volume cap removed — remaining capacity is domain-only.
+    expect(LIVE_DAILY_CAP).toBeNull();
+    expect(liveSendCapacity().dailyRemaining).toBeNull();
+
     const other = seedBuyer("othercap.com");
     const otherConvo = convo(other, "buy@othercap.com");
-    for (let i = 0; i < LIVE_DAILY_CAP - LIVE_DOMAIN_CAP; i++) {
-      insertAttempt({
-        conversationId: otherConvo,
-        buyerId: other,
-        status: "sent",
-        key: `daily-fill-${i}`,
-        providerMessageId: `gmail-fill-${i}`,
-        reason: "provider accepted",
-      });
-    }
-    expect(liveSentToday()).toBe(LIVE_DAILY_CAP);
-    expect(liveSendCapacity().dailyRemaining).toBe(0);
-
     const dailyHit = await guardedOutreach({
       conversationId: otherConvo, buyerId: other, email: "buy@othercap.com", domain: "othercap.com",
-      company: "Other", lots: [lotC], channel: "email", idempotencyKey: "daily-over",
+      company: "Other", lots: [lotC], channel: "email", idempotencyKey: "daily-uncapped",
     });
-    expect(dailyHit.status).toBe("deferred");
-    expect(dailyHit.reason).toMatch(/daily cap/);
+    expect(dailyHit.status).toBe("sent");
+    expect(dailyHit.reason).not.toMatch(/daily cap/);
   });
 });

@@ -15,7 +15,9 @@ Made so implementation does not block on questions.
 11. **Grok Bot is for browser UI only** (WhatsApp Web, forms, LinkedIn/Instagram). Deterministic code owns orchestration, state, and safety. xAI API (if present) may do extraction/copy; it does not refill Cursor Grok quota.
 12. **Clay spend stays $0.**
 13. **Do not auto-message Oliver.** Handoffs are packets for humans.
-14. **Authorized sender is `saevitzonoverstock@gmail.com`.** Local GrokBot settings state `saefamoverstock` was banned. Sign as Bailey Saevitzon / Saefam Overstock / 818-406-8612. Do not use personal or Berkeley mailboxes.
-15. **Email is the only live channel.** Forms / Instagram / LinkedIn / marketplaces are registered operators that defer. See CHANNELS.md.
+14. **Authorized sender is `saevitzonoverstock@gmail.com`.** (Updated 2026-09-14 — pivoted off saefamoverstock after Gmail send-limit.) Sign as Bailey Saevitzon / Saefam Overstock / 818-406-8612. Do not use personal or Berkeley mailboxes. `saefamoverstock@gmail.com` is legacy inbound/read-only only — never send from it. Both inboxes feed the same inbound pipeline.
+15. **Email is the only live outbound channel.** Public wholesale/contact forms are the only additional outbound channel we will build (prepare now, submit later). LinkedIn is research + rare human assist. Instagram, vendor portals, marketplace chat, WhatsApp-to-buyers, and autodial are rejected.
 16. **Never invent a contact.** `purchasing@domain` is not a channel. Route only on stored endpoints.
-17. **Social/form live work is Phase 2/3** and must follow platform rules. No anti-automation circumvention.
+17. **No anti-automation circumvention.** CAPTCHA/login/MFA stops that route only.
+18. **Approved stack (2026-09-13):** named email first; bounce → one form fallback; buyer+lot one-touch except address bounce; Grok researches in live or dry_run (never sends).
+19. **Overnight clock (2026-09-14):** launchd `com.bmsmoneynigga.autonomy` POSTs `/api/jobs/tick` every 5 minutes and restarts :3222 if health is down. That HTTP cycle is the only clock (research, rematch, send, Gmail sync). No in-process `setInterval`. Email is the only autonomous execute path; forms wait for GrokBot and must not spin the matcher.
