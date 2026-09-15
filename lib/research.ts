@@ -8,6 +8,7 @@ import { lotHasSendableMedia } from "./email/attachments";
 import { emit } from "./events";
 import { inferLotCategory, validateMandateEvidence } from "./matcher";
 import { pauseLotsMissingOriginalMedia } from "./repairs";
+import { enqueueContactUpgradeJobs } from "./targeting";
 
 export function discoverQuery(lot: { id: number; category: string; title: string }): string {
   return `wholesale buyers ${lot.category} ${lot.title}`;
@@ -356,7 +357,7 @@ export function repairLotCategories(): number {
   return n;
 }
 
-export function researchTick(): { queued: number; seeded: number } {
+export function researchTick(): { queued: number; seeded: number; upgrades: number } {
   pauseLotsMissingOriginalMedia();
   purgeDeadInboxEndpoints();
   repairLotCategories();
@@ -383,9 +384,10 @@ export function researchTick(): { queued: number; seeded: number } {
       if (id && !had) queued += 1;
     }
   }
-  emit("research.tick", { queued }, `research.tick:${new Date().toISOString().slice(0, 13)}`);
-  audit("research", "tick", { detail: { queued, lots: eligible.length } });
-  return { queued, seeded: eligible.length };
+  const upgrades = enqueueContactUpgradeJobs();
+  emit("research.tick", { queued, upgrades }, `research.tick:${new Date().toISOString().slice(0, 13)}`);
+  audit("research", "tick", { detail: { queued, upgrades, lots: eligible.length } });
+  return { queued, seeded: eligible.length, upgrades };
 }
 
 export function enqueueGrokJob(agent: string, instruction: string, input: unknown): number {

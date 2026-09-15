@@ -330,6 +330,17 @@ CREATE TABLE IF NOT EXISTS opportunities (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS contact_quality_stats (
+  quality TEXT NOT NULL,
+  source TEXT NOT NULL,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  bounced INTEGER NOT NULL DEFAULT 0,
+  replied INTEGER NOT NULL DEFAULT 0,
+  phone_captured INTEGER NOT NULL DEFAULT 0,
+  oliver_handoff INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (quality, source)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at, type);
 CREATE INDEX IF NOT EXISTS idx_lots_state ON lots(state, availability);
 CREATE INDEX IF NOT EXISTS idx_media_lot ON lot_media(lot_id, outreach_safe);

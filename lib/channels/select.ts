@@ -1,6 +1,7 @@
 import { db } from "../db";
-import { extractBuyerEmail } from "../email/address";
+import { extractBuyerEmail, parseRecipient } from "../email/address";
 import { isDeadInbox, isSuppressed } from "../suppression";
+import { rankEmailScore } from "../targeting";
 import type { ChannelEndpoint, ChannelId } from "./types";
 
 /** Channels that may become a sales action. Instagram/portals/phone are research or reject. */
@@ -70,13 +71,27 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
   }
 
   const contacts = db().prepare(
-    "SELECT email, phone, linkedin, instagram, verification FROM buyer_contacts WHERE buyer_id=?"
-  ).all(buyerId) as Array<{ email: string | null; phone: string | null; linkedin: string | null; instagram: string | null; verification: string }>;
+    "SELECT email, phone, linkedin, instagram, name, title, verification FROM buyer_contacts WHERE buyer_id=?"
+  ).all(buyerId) as Array<{
+    email: string | null; phone: string | null; linkedin: string | null; instagram: string | null;
+    name: string | null; title: string | null; verification: string;
+  }>;
   for (const c of contacts) {
     const verified = /verified|public_intake|clay/i.test(c.verification ?? "");
     if (c.email) {
-      const parsed = extractBuyerEmail(c.email);
-      if (parsed.ok) add({ channel: "email", handle: parsed.email, confidence: verified ? 0.95 : 0.6, verified, source: "buyer_contacts" });
+      const parsed = parseRecipient(c.email);
+      const extracted = parsed.ok ? parsed : extractBuyerEmail(c.email);
+      if (extracted.ok) {
+        add({
+          channel: "email",
+          handle: extracted.email,
+          confidence: verified ? 0.95 : 0.6,
+          verified,
+          source: "buyer_contacts",
+          name: c.name ?? undefined,
+          title: c.title ?? undefined,
+        });
+      }
     }
     if (c.phone) add({ channel: "phone", handle: c.phone, confidence: 0.7, verified, source: "buyer_contacts" });
     if (c.linkedin) add({ channel: "linkedin", handle: c.linkedin, confidence: 0.65, verified, source: "buyer_contacts" });
@@ -120,7 +135,10 @@ function scoreEndpoint(buyerId: number, e: ChannelEndpoint, preferred?: string):
   if (preferred && e.channel === preferred) score += 1.5;
   if (e.channel === "email" && !e.verified) score -= 1.5;
   // Autonomous overnight path is email. A verified form must not outrank a real inbox.
-  if (e.channel === "email") score += 8;
+  if (e.channel === "email") {
+    score += 8;
+    score += rankEmailScore(e.handle, { source: e.source, name: e.name, title: e.title }).bonus;
+  }
   score += namedContactBoost(buyerId, e);
   score += historyBoost(buyerId, e.channel);
   return score;
@@ -135,9 +153,12 @@ function rankEndpoints(buyerId: number, outreachOnly: boolean): RankedChannel[] 
     .filter((e) => !outreachOnly || OUTREACH_CHANNELS.includes(e.channel))
     .map((e) => {
       const score = scoreEndpoint(buyerId, e, preferred);
+      const quality = e.channel === "email"
+        ? rankEmailScore(e.handle, { source: e.source, name: e.name, title: e.title }).quality
+        : e.channel;
       const reason = preferred && e.channel === preferred
         ? `preferred ${preferred} available`
-        : `${e.channel} score ${score.toFixed(2)} (verified=${e.verified})`;
+        : `${e.channel} ${quality} score ${score.toFixed(2)} (verified=${e.verified})`;
       return { endpoint: e, score, reason };
     })
     .sort((a, b) => b.score - a.score);

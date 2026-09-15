@@ -22,8 +22,11 @@ export function createOpportunity(input: {
 
 function setStage(id: number, stage: OpportunityStage, reason?: string, channel?: string, handle?: string): void {
   db().prepare(
-    "UPDATE opportunities SET stage=?, reason=?, selected_channel=COALESCE(?,selected_channel), selected_handle=COALESCE(?,selected_handle), updated_at=datetime('now') WHERE id=?"
-  ).run(stage, reason ?? null, channel ?? null, handle ?? null, id);
+    `UPDATE opportunities SET stage=?, reason=?,
+       selected_channel=CASE WHEN ? IS NOT NULL THEN ? ELSE selected_channel END,
+       selected_handle=CASE WHEN ? IS NOT NULL THEN ? ELSE selected_handle END,
+       updated_at=datetime('now') WHERE id=?`
+  ).run(stage, reason ?? null, channel ?? null, channel ?? null, handle ?? null, handle ?? null, id);
 }
 
 export async function dispatchOpportunity(input: {

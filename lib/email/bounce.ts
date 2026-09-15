@@ -31,16 +31,17 @@ export function extractFailedRecipient(text: string, headerOrFrom?: string): str
 }
 
 /** Gmail rejected OUR send (quota), not the buyer inbox. Never treat as a recipient bounce. */
-export function looksLikeSenderLimit(text: string, subject?: string): boolean {
-  const t = `${subject ?? ""} ${text ?? ""}`.toLowerCase();
+export function looksLikeSenderLimit(text: string, fromOrSubject?: string, subject?: string): boolean {
+  const t = `${fromOrSubject ?? ""} ${subject ?? ""} ${text ?? ""}`.toLowerCase();
   if (/address not found|user unknown|unknown user|mailbox (not found|unavailable)|550\s*5\.1\./.test(t)) return false;
   return /reached a limit for sending mail/.test(t)
     || /you have reached a limit for sending/.test(t)
-    || /your message was not sent/.test(t);
+    || /your message was not sent/.test(t)
+    || /sending limit|daily sending limit/.test(t);
 }
 
 export function looksLikeHardBounce(text: string, from?: string, subject?: string): boolean {
-  if (looksLikeSenderLimit(text, subject)) return false;
+  if (looksLikeSenderLimit(text, from, subject)) return false;
   const t = `${from ?? ""} ${subject ?? ""} ${text ?? ""}`.toLowerCase();
   return /delivery status notification|undeliverable|delivery (failure|failed)|returned to sender/.test(t)
     || /address not found|user unknown|unknown user|recipient rejected|mailbox (not found|unavailable)|no such user|message blocked/.test(t)
@@ -57,7 +58,7 @@ export function inboxBounceFlags(input: {
   subject?: string;
   failedHeader?: string;
 }): { bounced: boolean; failedRecipient?: string } {
-  if (looksLikeSenderLimit(input.text, input.subject)) {
+  if (looksLikeSenderLimit(input.text, input.from, input.subject)) {
     return { bounced: false };
   }
   const header = (input.failedHeader ?? "").trim();

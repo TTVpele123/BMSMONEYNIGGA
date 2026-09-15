@@ -3,6 +3,7 @@ import { db, killSwitchOn, outboundMode } from "./db";
 import { northStar } from "./orchestrator";
 import { bouncedOnlyDomains, emailReadyBuyerIds, remainingEmailReadyForLot, remainingSendableTodayForLot } from "./research";
 import { isSuppressed } from "./suppression";
+import { bestEmailForBuyer, isWeakEmailQuality, listWeakEmailBuyers, qualityFunnel } from "./targeting";
 
 /** North-star is conversations/deals per lot. Everything else is a diagnostic. */
 export function funnel() {
@@ -27,6 +28,7 @@ export function funnel() {
     deals: q("SELECT COUNT(*) AS n FROM escalations WHERE state='handed_to_oliver'"),
     revenue: null as number | null,
     channel_board: channelBoard(),
+    contact_quality: qualityFunnel(),
   };
 }
 
@@ -115,6 +117,8 @@ export function researchCoverage() {
       };
     })(),
     bounced_domains: bouncedOnlyDomains(emailReady),
+    upgrade_targets: listWeakEmailBuyers(25),
+    contact_quality: qualityFunnel(),
     lots: (
       db().prepare(
         `SELECT l.id, l.title, l.category, l.brand, l.quantity, l.unit_price, l.state, l.availability,
@@ -209,23 +213,41 @@ export function opportunityWorklist(limit = 25) {
       LIMIT 20`
   ).all() as Array<{ id: number; company: string; domain: string; website: string | null; categories: string; verification_status: string }>;
 
-  return {
-    mode: outboundMode(),
-    kill: killSwitchOn(),
-    pairs: opps.map((o) => ({
+  const pairs = opps.map((o) => {
+    const handle = o.selected_handle ?? bestEmailForBuyer(o.buyer_id)?.email ?? null;
+    const quality = handle ? (bestEmailForBuyer(o.buyer_id)?.quality ?? null) : null;
+    return {
       opportunity_id: o.id,
       stage: o.stage,
       selected_channel: o.selected_channel,
       selected_handle: o.selected_handle,
+      contact_quality: quality,
+      needs_upgrade: quality ? isWeakEmailQuality(quality) : true,
       reason: o.reason,
       lots: lotBriefs(o.lot_ids),
       buyer: buyerPack(o.buyer_id, o.company, o.domain, o.website, o.categories, o.verification_status),
-    })),
-    unmatched_buyers: unmatched.map((b) => ({
-      opportunity_id: null,
-      stage: "unmatched",
-      lots: [],
-      buyer: buyerPack(b.id, b.company, b.domain, b.website, b.categories, b.verification_status),
-    })),
+    };
+  }).sort((a, b) => {
+    if (a.stage === "blocked" && b.stage !== "blocked") return -1;
+    if (b.stage === "blocked" && a.stage !== "blocked") return 1;
+    return Number(b.needs_upgrade) - Number(a.needs_upgrade);
+  });
+
+  return {
+    mode: outboundMode(),
+    kill: killSwitchOn(),
+    pairs,
+    unmatched_buyers: unmatched.map((b) => {
+      const best = bestEmailForBuyer(b.id);
+      return {
+        opportunity_id: null,
+        stage: "unmatched",
+        contact_quality: best?.quality ?? null,
+        needs_upgrade: best ? isWeakEmailQuality(best.quality) : true,
+        lots: [],
+        buyer: buyerPack(b.id, b.company, b.domain, b.website, b.categories, b.verification_status),
+      };
+    }),
+    upgrade_targets: listWeakEmailBuyers(25),
   };
 }

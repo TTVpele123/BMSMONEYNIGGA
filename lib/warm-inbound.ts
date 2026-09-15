@@ -5,6 +5,7 @@ import { sendAuthorizedEmail } from "./email/provider";
 import { buyerFacingTitle } from "./email/template";
 import { lotsForEscalation, photosForLots } from "./escalate";
 import { enqueueGrokJob } from "./research";
+import { recordQualityOutcome, sourceForEmail } from "./targeting";
 
 const PHONE_ASK = "What's the best phone number to reach you at?";
 
@@ -130,11 +131,22 @@ export function queueOliverHandoff(input: { escalationId: number; packet: string
     const row = db().prepare("SELECT lot_ids FROM escalations WHERE id=?").get(input.escalationId) as { lot_ids: string } | undefined;
     try { return row ? JSON.parse(row.lot_ids) as number[] : []; } catch { return []; }
   })();
-  return enqueueGrokJob(
+  const jobId = enqueueGrokJob(
     "INBOUND_ANALYST",
     `Send this to Oliver on WhatsApp as one message: name, phone, and product only. Attach the listed original lot photos if present. Do not add facts. Do not message anyone else. ${key}`,
     { ...input, photos: photosForLots(lotIds) },
   );
+  const esc = db().prepare(
+    `SELECT o.selected_handle AS handle, c.contact_email AS email
+       FROM escalations e
+       LEFT JOIN opportunities o ON o.buyer_id=e.buyer_id
+       LEFT JOIN conversations c ON c.buyer_id=e.buyer_id
+      WHERE e.id=?
+      ORDER BY o.id DESC LIMIT 1`
+  ).get(input.escalationId) as { handle: string | null; email: string | null } | undefined;
+  const target = esc?.handle || esc?.email;
+  if (target) recordQualityOutcome(target, "oliver_handoff", { source: sourceForEmail(target) });
+  return jobId;
 }
 
 export function applyOliverHandoffResult(jobId: number, ok: boolean): void {

@@ -9,6 +9,7 @@ import { extractBuyerEmail } from "./email/address";
 import { buyerLotAlreadyTouched, untouchedLotIds } from "./ledger";
 import { pauseLotsMissingOriginalMedia } from "./repairs";
 import { isDeadInbox, suppressedDomainSet } from "./suppression";
+import { applyBetterContact } from "./targeting";
 
 function liveContactEmail(buyerId: number): string | null {
   const rows = db().prepare(
@@ -24,7 +25,10 @@ function liveContactEmail(buyerId: number): string | null {
 
 export function ensureConversation(buyerId: number, channel: string, email: string | null): number {
   const existing = db().prepare("SELECT id FROM conversations WHERE buyer_id=?").get(buyerId) as { id: number } | undefined;
-  if (existing) return existing.id;
+  if (existing) {
+    if (email) applyBetterContact(buyerId, email);
+    return existing.id;
+  }
   const info = db().prepare(
     "INSERT INTO conversations(buyer_id,state,channel,contact_email) VALUES(?,'idle',?,?)"
   ).run(buyerId, channel, email);
@@ -122,7 +126,8 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
     const routes = selectOutreachChannels(buyer.id);
     const hasEmail = routes.some((r) => r.endpoint.channel === "email");
     if (!hasEmail && buyerHasPendingFormJob(buyer.id)) continue;
-    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", contactEmail);
+    const rankedEmail = routes.find((r) => r.endpoint.channel === "email")?.endpoint.handle ?? contactEmail;
+    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", rankedEmail);
     attachLots(convoId, topLots);
 
     const convo = db().prepare("SELECT state FROM conversations WHERE id=?").get(convoId) as { state: string };
