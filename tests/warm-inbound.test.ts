@@ -397,6 +397,18 @@ describe("warm inbound", () => {
     expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE '%oliver_handoff:%'").get() as { n: number }).n).toBeGreaterThanOrEqual(1);
   });
 
+  it("does not hand a form-confirmation auto-ack even when a stored mobile exists", async () => {
+    const buyerId = seedBuyer("formack.com");
+    db().prepare("UPDATE buyer_contacts SET phone='+31 6 33225880', verification='web_verified' WHERE buyer_id=?").run(buyerId);
+    const r = await processInbound({
+      from: "info@formack.com",
+      text: "Bailey Saevitzon bevestiging formulier ingevuld Firma Reinders Hardenberg",
+      providerMessageId: "form-ack-1",
+    });
+    expect(r.escalated).toBe(false);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST'").get() as { n: number }).n).toBe(0);
+  });
+
   it("uses a stored mobile before asking for a phone", async () => {
     const buyerId = seedBuyer("storeddirect.com");
     db().prepare("UPDATE buyer_contacts SET phone='415-555-0188', verification='inbound' WHERE buyer_id=?").run(buyerId);

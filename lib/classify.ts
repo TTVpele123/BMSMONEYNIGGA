@@ -66,7 +66,9 @@ export function looksLikeAutoAck(raw: string): boolean {
     || /forwarded your (inquiry|email|request)/.test(t)
     || /you('ll| will) hear from/.test(t)
     || /this is an automatic/.test(t)
-    || /do not reply to this/.test(t);
+    || /do not reply to this/.test(t)
+    || /bevestiging formulier|formulier ingevuld/.test(t)
+    || /form (has been )?(submitted|received|filled)|your form (was |has been )?(submitted|received)/.test(t);
 }
 
 export function buyerAuthoredReply(raw: string): string {
