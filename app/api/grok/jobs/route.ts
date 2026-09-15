@@ -3,15 +3,25 @@ import { db } from "@/lib/db";
 import { claimGrokJobs, finishGrokJob, peekGrokJobs } from "@/lib/research";
 import { applyOliverHandoffResult } from "@/lib/warm-inbound";
 
+function jobsForClient(jobs: Array<{ id: number; agent: string; instruction: string; input: string }>) {
+  return jobs.map((j) => {
+    try {
+      return { ...j, input: JSON.parse(j.input) };
+    } catch {
+      return j;
+    }
+  });
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const agent = url.searchParams.get("agent") ?? "";
   const claim = url.searchParams.get("claim") === "1";
-  // INBOUND_ANALYST GET is a peek unless claim=1 so a check cannot steal the send.
-  if (agent === "INBOUND_ANALYST" && !claim) {
-    return Response.json({ ok: true, jobs: peekGrokJobs(agent) });
+  // Peek unless claim=1 so a dashboard check cannot steal a form or Oliver send.
+  if ((agent === "INBOUND_ANALYST" || agent === "FORM_OPERATOR") && !claim) {
+    return Response.json({ ok: true, jobs: jobsForClient(peekGrokJobs(agent)) });
   }
-  return Response.json({ ok: true, jobs: claimGrokJobs(agent || undefined) });
+  return Response.json({ ok: true, jobs: jobsForClient(claimGrokJobs(agent || undefined)) });
 }
 
 export async function POST(req: Request) {

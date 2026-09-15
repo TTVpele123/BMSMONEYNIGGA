@@ -434,9 +434,14 @@ export function releaseStaleClaimedGrokJobs(minutes = 8): number {
   ).run(`-${minutes} minutes`).changes;
 }
 
+function grokClaimLimit(agent: string, limit?: number): number {
+  if (limit != null) return limit;
+  return agent === "INBOUND_ANALYST" || agent === "FORM_OPERATOR" ? 1 : 5;
+}
+
 export function peekGrokJobs(agent?: string, limit?: number): { id: number; agent: string; instruction: string; input: string }[] {
   if (!agent) return [];
-  const take = limit ?? (agent === "INBOUND_ANALYST" ? 1 : 5);
+  const take = grokClaimLimit(agent, limit);
   return db().prepare(
     "SELECT id, agent, instruction, input FROM grok_jobs WHERE state IN ('queued','claimed') AND agent=? ORDER BY id LIMIT ?"
   ).all(agent, take) as { id: number; agent: string; instruction: string; input: string }[];
@@ -446,7 +451,13 @@ export function claimGrokJobs(agent?: string, limit?: number): { id: number; age
   releaseStaleClaimedGrokJobs();
   if (!agent) return [];
   if (agent === "FORM_OPERATOR") expireTouchedFormJobs();
-  const take = limit ?? (agent === "INBOUND_ANALYST" ? 1 : 5);
+  const take = grokClaimLimit(agent, limit);
+  if (agent === "FORM_OPERATOR") {
+    const open = db().prepare(
+      "SELECT id, agent, instruction, input FROM grok_jobs WHERE state='claimed' AND agent=? ORDER BY id LIMIT ?"
+    ).all(agent, take) as { id: number; agent: string; instruction: string; input: string }[];
+    if (open.length) return open;
+  }
   const rows = db().prepare("SELECT id, agent, instruction, input FROM grok_jobs WHERE state='queued' AND agent=? ORDER BY id LIMIT ?").all(agent, take);
   const jobs = rows as { id: number; agent: string; instruction: string; input: string }[];
   for (const j of jobs) {

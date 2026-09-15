@@ -380,12 +380,35 @@ describe("channel router", () => {
 
     expect(claimGrokJobs()).toEqual([]);
     const claimed = claimGrokJobs("FORM_OPERATOR");
-    expect(claimed.map((j) => j.id).sort((a, b) => a - b)).toEqual([emailTouchedId, liveId].sort((a, b) => a - b));
+    expect(claimed.map((j) => j.id)).toEqual([emailTouchedId]);
+    expect(claimGrokJobs("FORM_OPERATOR").map((j) => j.id)).toEqual([emailTouchedId]);
+    expect(db().prepare("SELECT state FROM grok_jobs WHERE id=?").get(liveId)).toEqual({ state: "queued" });
     const stale = db().prepare("SELECT state, result FROM grok_jobs WHERE id=?").get(formDoneId) as { state: string; result: string };
     expect(stale.state).toBe("failed");
     expect(stale.result).toMatch(/form already sent/);
     expect(buyerLotAlreadyTouched(emailed, [lot.id]).touched).toBe(true);
     expect(buyerLotAlreadyTouched(bounced, [lot.id]).touched).toBe(false);
+  });
+
+  it("FORM_OPERATOR GET peeks unless claim=1 and resumes a claimed job", async () => {
+    const a = enqueueGrokJob("FORM_OPERATOR", "fill", { url: "https://a.example/form", live: true, submit: true });
+    const b = enqueueGrokJob("FORM_OPERATOR", "fill", { url: "https://b.example/form", live: true, submit: true });
+    const peeked = await (await getGrokJobs(new Request("http://localhost:3222/api/grok/jobs?agent=FORM_OPERATOR"))).json() as {
+      jobs: Array<{ id: number; input: { url?: string } }>;
+    };
+    expect(peeked.jobs.map((j) => j.id)).toEqual([a]);
+    expect(peeked.jobs[0]?.input.url).toBe("https://a.example/form");
+    expect(db().prepare("SELECT state FROM grok_jobs WHERE id=?").get(a)).toEqual({ state: "queued" });
+    expect(db().prepare("SELECT state FROM grok_jobs WHERE id=?").get(b)).toEqual({ state: "queued" });
+
+    const first = await (await getGrokJobs(new Request("http://localhost:3222/api/grok/jobs?agent=FORM_OPERATOR&claim=1"))).json() as { jobs: Array<{ id: number }> };
+    expect(first.jobs.map((j) => j.id)).toEqual([a]);
+    expect(db().prepare("SELECT state FROM grok_jobs WHERE id=?").get(a)).toEqual({ state: "claimed" });
+    expect(db().prepare("SELECT state FROM grok_jobs WHERE id=?").get(b)).toEqual({ state: "queued" });
+
+    const again = await (await getGrokJobs(new Request("http://localhost:3222/api/grok/jobs?agent=FORM_OPERATOR&claim=1"))).json() as { jobs: Array<{ id: number }> };
+    expect(again.jobs.map((j) => j.id)).toEqual([a]);
+    expect(db().prepare("SELECT state FROM grok_jobs WHERE id=?").get(b)).toEqual({ state: "queued" });
   });
 
   it("INBOUND_ANALYST GET peeks unless claim=1", async () => {
