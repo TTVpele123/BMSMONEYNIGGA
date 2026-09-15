@@ -1,6 +1,4 @@
-import { tick, heartbeat } from "../lib/orchestrator";
-import { researchTick } from "../lib/research";
+import { heartbeat, runSchedulerCycle } from "../lib/orchestrator";
 
-const research = researchTick();
-const orch = await tick();
-console.log(JSON.stringify({ research, orch, heartbeat: heartbeat() }, null, 2));
+const cycle = await runSchedulerCycle();
+console.log(JSON.stringify({ ...cycle, heartbeat: heartbeat() }, null, 2));

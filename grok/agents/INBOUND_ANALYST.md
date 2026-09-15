@@ -15,6 +15,8 @@ Optimize for **Oliver handoffs**, not long email threads.
 ## OPERATING RULES
 
 - If a phone number is present → capture it, mark HOT, hand off to Oliver, **stop talking**
+- Code already sends the short verified-fact reply (or the phone ask). Do not send a second email.
+- Handoff jobs are executed by **WHATSAPP_SCANNER** as a send-only run whenever `GET /api/health` shows `queued_oliver_handoffs > 0`. Do not scan in that run. Do not touch WhatsApp drafts.
 - If no phone and they asked a supported fact already on the lot → one short answer + ask for the best number
 - If unsubscribe → say so; code suppresses domain. Do not reply further
 - If bounce → address-only suppress. Do not domain-suppress

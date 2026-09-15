@@ -4,7 +4,8 @@ import type { ChannelId } from "@/lib/channels/types";
 import { CHANNEL_IDS } from "@/lib/channels/types";
 import { audit } from "@/lib/db";
 import { emit } from "@/lib/events";
-import { enrollBuyer, lotEligibleForResearch, recordMandate } from "@/lib/research";
+import { enrollBuyer, lotEligibleForResearch, recordContact, recordMandate } from "@/lib/research";
+import { isDeadInbox } from "@/lib/suppression";
 
 const Finding = z.object({
   agent: z.string(),
@@ -25,6 +26,14 @@ const Finding = z.object({
       discovered_at: z.string().optional(),
       outreach_permitted: z.boolean().default(true),
       executable: z.boolean().default(false),
+    })).default([]),
+    people: z.array(z.object({
+      name: z.string().optional(),
+      title: z.string().optional(),
+      email: z.string().optional(),
+      phone: z.string().optional(),
+      linkedin: z.string().optional(),
+      instagram: z.string().optional(),
     })).default([]),
     mandate: z.object({
       category: z.string(),
@@ -55,6 +64,7 @@ export async function POST(req: Request) {
           skippedGuessedEmails.push(`${b.domain}:${ep.handle}`);
           continue;
         }
+        if (ep.channel === "email" && isDeadInbox(ep.handle)) continue;
         recordEndpoint({
           buyerId,
           channel: ep.channel as ChannelId,
@@ -62,6 +72,18 @@ export async function POST(req: Request) {
           confidence: ep.confidence,
           verified: ep.executable && ep.confidence >= 0.8,
           source: `${body.agent}:${ep.source}`,
+        });
+      }
+      for (const person of b.people) {
+        recordContact({
+          buyerId,
+          name: person.name,
+          title: person.title,
+          email: person.email,
+          phone: person.phone,
+          linkedin: person.linkedin,
+          instagram: person.instagram,
+          verification: b.verification ?? "unverified",
         });
       }
       if (b.mandate) {
@@ -78,6 +100,8 @@ export async function POST(req: Request) {
     }
     if (body.lotId != null && lotEligibleForResearch(body.lotId)) {
       emit("match.requested", { lotId: body.lotId }, `match.requested:findings:${body.lotId}:${enrolled.join(",") || "none"}`);
+      const { runMatching } = await import("@/lib/conversations");
+      await runMatching(body.lotId);
     }
     audit("research", "findings_ingested", { detail: { agent: body.agent, lotId: body.lotId, buyers: enrolled, skippedGuessedEmails } });
     return Response.json({ ok: true, buyerIds: enrolled, skippedGuessedEmails });

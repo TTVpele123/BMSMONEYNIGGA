@@ -1,6 +1,7 @@
 import { listEndpoints } from "./channels/select";
 import { db, killSwitchOn, outboundMode } from "./db";
 import { northStar } from "./orchestrator";
+import { bouncedOnlyDomains, emailReadyBuyerIds, remainingEmailReadyForLot, remainingSendableTodayForLot } from "./research";
 import { isSuppressed } from "./suppression";
 
 /** North-star is conversations/deals per lot. Everything else is a diagnostic. */
@@ -25,58 +26,125 @@ export function funnel() {
     open_handoffs: q("SELECT COUNT(*) AS n FROM escalations WHERE state='open'"),
     deals: q("SELECT COUNT(*) AS n FROM escalations WHERE state='handed_to_oliver'"),
     revenue: null as number | null,
+    channel_board: channelBoard(),
+  };
+}
+
+/** Operator funnel: inventory → buyers → matches → routes → responses → Oliver. */
+export function channelBoard() {
+  const q = (sql: string) => (db().prepare(sql).get() as { n: number }).n;
+  return {
+    inventory: q("SELECT COUNT(*) AS n FROM lots WHERE availability='active'"),
+    researched_buyers: q("SELECT COUNT(*) AS n FROM buyers"),
+    qualified_buyers: q("SELECT COUNT(*) AS n FROM buyers WHERE disqualified_reason IS NULL AND verification_status NOT IN ('mismatch_rejected','REJECTED')"),
+    matches: q("SELECT COUNT(*) AS n FROM match_scores WHERE score>=0.45 AND hard_disqualified IS NULL"),
+    channel_ready: q("SELECT COUNT(*) AS n FROM channel_routes WHERE state IN ('ready','qualified')"),
+    actions_by_channel: db().prepare(
+      "SELECT channel, COUNT(*) AS n FROM outreach_attempts GROUP BY channel"
+    ).all() as Array<{ channel: string; n: number }>,
+    routes_by_state: db().prepare(
+      "SELECT state, COUNT(*) AS n FROM channel_routes GROUP BY state"
+    ).all() as Array<{ state: string; n: number }>,
+    routes_by_channel: db().prepare(
+      "SELECT channel, state, COUNT(*) AS n FROM channel_routes GROUP BY channel, state"
+    ).all() as Array<{ channel: string; state: string; n: number }>,
+    responses: q("SELECT COUNT(*) AS n FROM inbound_events"),
+    interested: q("SELECT COUNT(*) AS n FROM inbound_events WHERE interest_level IN ('high','medium')"),
+    phones: q("SELECT COUNT(*) AS n FROM inbound_events WHERE phone IS NOT NULL AND phone!=''"),
+    oliver_handoffs: q("SELECT COUNT(*) AS n FROM escalations"),
+    blockers: db().prepare(
+      `SELECT channel, state, blocker, COUNT(*) AS n FROM channel_routes
+        WHERE state IN ('failed','deferred','needs_human','suppressed') AND blocker IS NOT NULL
+        GROUP BY channel, state, blocker
+        ORDER BY n DESC LIMIT 20`
+    ).all() as Array<{ channel: string; state: string; blocker: string; n: number }>,
   };
 }
 
 export function opsSnapshot() {
   return {
     lots: db().prepare(
-      "SELECT id, title, category, brand, quantity, unit_price, state, availability FROM lots ORDER BY id DESC LIMIT 30"
+      `SELECT id, title, category, brand, quantity, unit_price, state, availability,
+              (SELECT COUNT(*) FROM lot_media m WHERE m.lot_id=lots.id AND m.outreach_safe=1) AS safe_media
+         FROM lots ORDER BY id DESC LIMIT 30`
     ).all(),
     opportunities: db().prepare(
       "SELECT id, buyer_id, selected_channel, selected_handle, stage, reason, lot_ids FROM opportunities ORDER BY id DESC LIMIT 40"
     ).all(),
     recent_whatsapp: db().prepare(
-      "SELECT message_id, sent_at, substr(text,1,160) AS text, lot_id, processed FROM whatsapp_messages ORDER BY id DESC LIMIT 20"
+      `SELECT message_id, sent_at, substr(text,1,160) AS text, lot_id, processed,
+              (SELECT COUNT(*) FROM lot_media m WHERE m.lot_id=whatsapp_messages.lot_id AND m.outreach_safe=1) AS safe_media
+         FROM whatsapp_messages ORDER BY id DESC LIMIT 20`
     ).all(),
     pending_grok_jobs: db().prepare(
       "SELECT id, agent, substr(instruction,1,120) AS instruction, state FROM grok_jobs WHERE state IN ('queued','claimed') ORDER BY id LIMIT 20"
     ).all(),
+    pending_form_jobs: db().prepare(
+      "SELECT id, state, substr(input,1,180) AS input FROM grok_jobs WHERE agent='FORM_OPERATOR' AND state IN ('queued','claimed') ORDER BY id LIMIT 20"
+    ).all(),
     pending_research: db().prepare(
       "SELECT id, kind, query, state FROM research_jobs WHERE state IN ('pending','running') ORDER BY id LIMIT 20"
     ).all(),
+    channel_routes: db().prepare(
+      "SELECT id, buyer_id, opportunity_id, channel, handle, state, blocker FROM channel_routes ORDER BY id DESC LIMIT 40"
+    ).all(),
+    channel_board: channelBoard(),
   };
 }
 
-/** Compact skip-list so BUYER_RESEARCHER expands the pool instead of re-finding known domains. */
+/** Compact skip-list so BUYER_RESEARCHER expands the pool instead of re-finding email-ready domains. */
 export function researchCoverage() {
   const q = (sql: string) => (db().prepare(sql).get() as { n: number }).n;
+  const emailReady = emailReadyBuyerIds();
+  const knownDomains = (db().prepare("SELECT id, domain FROM buyers ORDER BY domain").all() as Array<{ id: number; domain: string }>)
+    .filter((r) => emailReady.has(r.id))
+    .map((r) => r.domain);
   return {
     mode: outboundMode(),
     kill: killSwitchOn(),
-    known_domains: (db().prepare("SELECT domain FROM buyers ORDER BY domain").all() as { domain: string }[]).map((r) => r.domain),
+    known_domains: knownDomains,
     suppressed: db().prepare("SELECT address_or_domain AS value, reason FROM suppressions").all(),
-    buyer_counts: {
-      total: q("SELECT COUNT(*) AS n FROM buyers"),
-      qualified: q("SELECT COUNT(*) AS n FROM buyers WHERE disqualified_reason IS NULL AND verification_status NOT IN ('mismatch_rejected','REJECTED')"),
-      with_email: q("SELECT COUNT(DISTINCT buyer_id) AS n FROM buyer_contacts WHERE email IS NOT NULL AND email!=''"),
-      no_email: q("SELECT COUNT(*) AS n FROM buyers b WHERE NOT EXISTS (SELECT 1 FROM buyer_contacts c WHERE c.buyer_id=b.id AND c.email IS NOT NULL AND c.email!='')"),
-    },
-    lots: db().prepare(
-      `SELECT l.id, l.title, l.category, l.brand, l.quantity, l.unit_price, l.state, l.availability,
-              (SELECT COUNT(*) FROM lot_media m WHERE m.lot_id=l.id AND m.outreach_safe=1) AS safe_media,
-              (SELECT COUNT(*) FROM match_scores ms WHERE ms.lot_id=l.id AND ms.score>=0.45 AND ms.hard_disqualified IS NULL) AS qualified_matches
-         FROM lots l
-        WHERE l.availability='active'
-          AND l.project_gate NOT IN ('DO_NOT_MARKET','ARCHIVED')
-          AND l.state IN ('matchable','outreach_active','media_ready')
-          AND EXISTS (
-            SELECT 1 FROM lot_media m
-             WHERE m.lot_id=l.id AND m.outreach_safe=1 AND m.association_certain=1
-               AND m.classification NOT IN ('screenshot_chat_capture','invalid','duplicate')
-          )
-        ORDER BY l.id DESC`
-    ).all(),
+    buyer_counts: (() => {
+      const total = q("SELECT COUNT(*) AS n FROM buyers");
+      const withEmail = emailReady.size;
+      return {
+        total,
+        qualified: q("SELECT COUNT(*) AS n FROM buyers WHERE disqualified_reason IS NULL AND verification_status NOT IN ('mismatch_rejected','REJECTED')"),
+        with_email: withEmail,
+        no_email: total - withEmail,
+      };
+    })(),
+    bounced_domains: bouncedOnlyDomains(emailReady),
+    lots: (
+      db().prepare(
+        `SELECT l.id, l.title, l.category, l.brand, l.quantity, l.unit_price, l.state, l.availability,
+                (SELECT COUNT(*) FROM lot_media m WHERE m.lot_id=l.id AND m.outreach_safe=1) AS safe_media,
+                (SELECT COUNT(*) FROM match_scores ms WHERE ms.lot_id=l.id AND ms.score>=0.45 AND ms.hard_disqualified IS NULL) AS qualified_matches
+           FROM lots l
+          WHERE l.availability='active'
+            AND l.project_gate NOT IN ('DO_NOT_MARKET','ARCHIVED')
+            AND l.state IN ('matchable','outreach_active','media_ready')
+            AND EXISTS (
+              SELECT 1 FROM lot_media m
+               WHERE m.lot_id=l.id AND m.outreach_safe=1 AND m.association_certain=1
+                 AND m.classification NOT IN ('screenshot_chat_capture','invalid','duplicate')
+            )
+          ORDER BY l.id DESC`
+      ).all() as Array<{
+        id: number; title: string; category: string; brand: string | null; quantity: number | null;
+        unit_price: number | null; state: string; availability: string; safe_media: number; qualified_matches: number;
+      }>
+    ).map((lot) => {
+      const remaining = remainingEmailReadyForLot(lot.id, emailReady);
+      const sendableToday = remainingSendableTodayForLot(lot.id, emailReady);
+      return {
+        ...lot,
+        remaining_email_ready: remaining,
+        remaining_sendable_today: sendableToday,
+        need_new_domains: sendableToday < 8,
+        thin_coverage: remaining < 8 || sendableToday < 8,
+      };
+    }),
   };
 }
 

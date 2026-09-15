@@ -11,6 +11,7 @@ export type LotBrief = {
   quantity: number | null;
   unit_price: number | null;
   brand: string | null;
+  raw_text?: string | null;
 };
 
 export type MediaPick = {
@@ -21,6 +22,10 @@ export type MediaPick = {
 
 export function lotHasSendableMedia(lotId: number): boolean {
   return pickMediaForLot(lotId).length > 0;
+}
+
+export function listSendableMediaFiles(lotId: number): Array<{ path: string; filename: string; sha256: string }> {
+  return pickMediaForLot(lotId).map((m) => ({ path: m.path, filename: m.filename, sha256: m.sha256 }));
 }
 
 function pickMediaForLot(lotId: number) {

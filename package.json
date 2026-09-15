@@ -9,7 +9,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dry-run": "tsx scripts/dry-run.ts",
     "import:legacy": "tsx scripts/import-legacy.ts",
     "jobs:tick": "tsx scripts/tick.ts",
     "db:migrate": "tsx scripts/migrate.ts"

@@ -1,7 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { db } from "../lib/db";
 import { emit, markFailed, unprocessedEvents } from "../lib/events";
-import { tick } from "../lib/orchestrator";
+import { ingestWhatsApp } from "../lib/intake";
+import { enqueueEligibleLotMatches, tick } from "../lib/orchestrator";
+import { writeTestPng } from "./png";
 
 describe("queue recovery", () => {
   it("retries failed handlers and dead-letters after 5 failures", async () => {
@@ -32,5 +37,29 @@ describe("queue recovery", () => {
     expect(row.attempts).toBe(1);
     expect(row.last_error).toBe("boom");
     expect(row.processed_at).toBeNull();
+  });
+
+  it("re-queues matching for media-eligible lots after events drain", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bmsm-rematch-"));
+    const photo = path.join(dir, "tees.png");
+    writeTestPng(photo, 420, 240);
+    const ingested = ingestWhatsApp({
+      chat: "oliver",
+      scanned_at: new Date().toISOString(),
+      messages: [{
+        id: `wa-rematch-${Date.now()}`,
+        at: new Date().toISOString(),
+        text: "Tees 500 units $3",
+        media: [{ filename: "tees.png", path: photo }],
+      }],
+    });
+    const lotId = ingested.lotsTouched[0];
+    db().prepare("DELETE FROM events").run();
+    expect(unprocessedEvents().length).toBe(0);
+    const first = enqueueEligibleLotMatches();
+    expect(first).toBeGreaterThanOrEqual(1);
+    const pending = unprocessedEvents();
+    expect(pending.some((e) => e.type === "match.requested" && e.payload.includes(String(lotId)))).toBe(true);
+    expect(enqueueEligibleLotMatches()).toBe(0);
   });
 });

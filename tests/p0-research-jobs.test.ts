@@ -4,13 +4,17 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { db } from "../lib/db";
 import { ingestWhatsApp } from "../lib/intake";
+import { researchCoverage } from "../lib/metrics";
 import {
   discoverQuery,
+  enrollBuyer,
   enqueueResearch,
   expireIneligibleResearchJobs,
   pendingDiscoverQueue,
+  recordContact,
   researchTick,
 } from "../lib/research";
+import { writeBounce } from "../lib/suppression";
 import { writeTestPng } from "./png";
 
 let photoNonce = 0;
@@ -95,5 +99,78 @@ describe("P0 #3 research job expiry and per-lot dedupe", () => {
     expect(pending.every((j) => j.lotId === good.id)).toBe(true);
     expect(pending).toHaveLength(1);
     expect(tick1.seeded).toBe(1);
+  });
+
+  it("reopens normal discover when a lot is only covered by bounced-only inboxes", () => {
+    const lot = seedLot("Bounce coverage tees", true);
+    for (let i = 0; i < 8; i++) {
+      const domain = `bouncecover${i}.com`;
+      const { buyerId } = enrollBuyer({ company: domain, domain, categories: "apparel" });
+      recordContact({ buyerId, email: `dead@${domain}`, verification: "verified" });
+      writeBounce(`dead@${domain}`);
+      db().prepare(
+        `INSERT INTO match_scores(lot_id,buyer_id,score,bucket,capacity_score,product_fit_score,geography_score,history_score,contact_score,rationale)
+         VALUES(?,?,0.7,'explicit',1,1,1,0,1,'test')`
+      ).run(lot.id, buyerId);
+    }
+    expect(researchCoverage().known_domains).not.toContain("bouncecover0.com");
+    db().prepare("DELETE FROM research_jobs").run();
+    const tick = researchTick();
+    expect(tick.queued).toBe(1);
+    expect(pendingDiscoverQueue().some((j) => j.lotId === lot.id)).toBe(true);
+  });
+
+  it("does not queue discover when eight email-ready matches remain", () => {
+    const lot = seedLot("Live coverage tees", true);
+    for (let i = 0; i < 8; i++) {
+      const domain = `livecover${i}.com`;
+      const { buyerId } = enrollBuyer({ company: domain, domain, categories: "apparel" });
+      recordContact({ buyerId, email: `buy@${domain}`, verification: "verified" });
+      db().prepare(
+        `INSERT INTO match_scores(lot_id,buyer_id,score,bucket,capacity_score,product_fit_score,geography_score,history_score,contact_score,rationale)
+         VALUES(?,?,0.7,'explicit',1,1,1,0,1,'test')`
+      ).run(lot.id, buyerId);
+    }
+    expect(researchCoverage().known_domains).toContain("livecover0.com");
+    const covered = (researchCoverage().lots as Array<{ id: number; remaining_email_ready: number; thin_coverage: boolean }>)
+      .find((l) => l.id === lot.id);
+    expect(covered?.remaining_email_ready).toBe(8);
+    expect(covered?.remaining_sendable_today).toBe(8);
+    expect(covered?.need_new_domains).toBe(false);
+    expect(covered?.thin_coverage).toBe(false);
+    db().prepare("DELETE FROM research_jobs").run();
+    expect(researchTick().queued).toBe(0);
+    expect(pendingDiscoverQueue()).toEqual([]);
+  });
+
+  it("reopens discover when eight email-ready matches sit on domains already at the daily cap", () => {
+    const lot = seedLot("Capped domain tees", true);
+    for (let i = 0; i < 8; i++) {
+      const domain = `cappedcover${i}.com`;
+      const { buyerId } = enrollBuyer({ company: domain, domain, categories: "apparel" });
+      recordContact({ buyerId, email: `buy@${domain}`, verification: "verified" });
+      db().prepare(
+        `INSERT INTO match_scores(lot_id,buyer_id,score,bucket,capacity_score,product_fit_score,geography_score,history_score,contact_score,rationale)
+         VALUES(?,?,0.7,'explicit',1,1,1,0,1,'test')`
+      ).run(lot.id, buyerId);
+      const convo = Number(db().prepare("INSERT INTO conversations(buyer_id,state,channel,contact_email) VALUES(?,'idle','email',?)").run(buyerId, `buy@${domain}`).lastInsertRowid);
+      for (const tag of ["a", "b"]) {
+        db().prepare(
+          `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)
+           VALUES(?,?,'email','[]','','','[]','sent','sent',?,?)`
+        ).run(convo, buyerId, `cap-${i}-${tag}`, `gmail-cap-${i}-${tag}`);
+      }
+    }
+
+    const covered = (researchCoverage().lots as Array<{
+      id: number; remaining_email_ready: number; remaining_sendable_today: number; need_new_domains: boolean; thin_coverage: boolean;
+    }>).find((l) => l.id === lot.id);
+    expect(covered?.remaining_email_ready).toBe(8);
+    expect(covered?.remaining_sendable_today).toBe(0);
+    expect(covered?.need_new_domains).toBe(true);
+    expect(covered?.thin_coverage).toBe(true);
+    db().prepare("DELETE FROM research_jobs").run();
+    expect(researchTick().queued).toBe(1);
+    expect(pendingDiscoverQueue().some((j) => j.lotId === lot.id)).toBe(true);
   });
 });

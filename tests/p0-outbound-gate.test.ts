@@ -136,17 +136,22 @@ describe("P0 #5 final outbound gate blocks provider execution", () => {
 
     const buyerId = seedBuyer("fullcap.com");
     const conversationId = convo(buyerId, "buy@fullcap.com");
-    for (let i = 0; i < LIVE_DAILY_CAP; i++) {
-      db().prepare(
-        `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)
-         VALUES(?,?,?,'[]','','','[]','sent','provider accepted',?,?)`
-      ).run(conversationId, buyerId, "email", `cap-fill-${i}`, `gmail-fill-${i}`);
+    // No artificial daily volume cap in production (LIVE_DAILY_CAP === null).
+    if (LIVE_DAILY_CAP != null) {
+      for (let i = 0; i < LIVE_DAILY_CAP; i++) {
+        db().prepare(
+          `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)
+           VALUES(?,?,?,'[]','','','[]','sent','provider accepted',?,?)`
+        ).run(conversationId, buyerId, "email", `cap-fill-${i}`, `gmail-fill-${i}`);
+      }
+      const daily = await getGmailClient().send({ ...payload([good.id]), to: "buy@othercap.com", domain: "othercap.com" });
+      expect(daily).toEqual({ ok: false, error: `daily cap ${LIVE_DAILY_CAP}` });
+      expect(calls).toHaveLength(0);
+      db().prepare("DELETE FROM outreach_attempts").run();
+    } else {
+      expect(LIVE_DAILY_CAP).toBeNull();
     }
-    const daily = await getGmailClient().send({ ...payload([good.id]), to: "buy@othercap.com", domain: "othercap.com" });
-    expect(daily).toEqual({ ok: false, error: `daily cap ${LIVE_DAILY_CAP}` });
-    expect(calls).toHaveLength(0);
 
-    db().prepare("DELETE FROM outreach_attempts").run();
     for (let i = 0; i < LIVE_DOMAIN_CAP; i++) {
       db().prepare(
         `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)

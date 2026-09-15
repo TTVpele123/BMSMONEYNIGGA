@@ -1,6 +1,7 @@
 import { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSentToday, liveSentToDomainToday } from "./caps";
 import { parseRecipient } from "./email/address";
 import { selectSendableLots } from "./email/attachments";
+import { composePlain, composeRichHtml } from "./email/template";
 import { sendAuthorizedEmail } from "./email/provider";
 import type { ChannelResult } from "./channels/types";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
@@ -12,31 +13,9 @@ export { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSendCapacity, liveSentToday, liveS
 export function composeMessage(input: {
   company: string;
   lots: { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
-}): { subject: string; body: string } {
-  const titles = input.lots.map((l) => l.title).join(" / ");
-  const subject = `Wholesale availability — ${titles}`.slice(0, 140);
-  const lines = [
-    `Hi ${input.company} team,`,
-    "",
-    "We have current closeout inventory that looks like a fit based on what you buy. Details from the supplier (not estimates):",
-    "",
-    ...input.lots.map((l) => {
-      const qty = l.quantity != null ? `${l.quantity} units` : "qty on request";
-      const price = l.unit_price != null ? `$${l.unit_price}/unit` : "price on request";
-      const brand = l.brand ? ` · ${l.brand}` : "";
-      return `• ${l.title}${brand} — ${l.category} — ${qty} — ${price}`;
-    }),
-    "",
-    "Photos attached are the supplier's original lot photos — not stock imagery.",
-    "",
-    "If this is relevant, reply with the quantity and any constraints (sizes, price, timing). If not a fit, a one-line pass is enough and we will not follow up on this lot.",
-    "",
-    "Bailey Saevitzon",
-    "Saefam Overstock",
-    "818-406-8612",
-    "saevitzonoverstock@gmail.com",
-  ];
-  return { subject, body: lines.join("\n") };
+}): { subject: string; body: string; html?: string } {
+  const plain = composePlain(input);
+  return { subject: plain.subject, body: plain.body };
 }
 
 export async function guardedOutreach(input: {
@@ -48,7 +27,7 @@ export async function guardedOutreach(input: {
   lots: { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
   channel: string;
   idempotencyKey: string;
-  composed?: { subject?: string; body: string };
+  composed?: { subject?: string; body: string; html?: string };
 }): Promise<ChannelResult> {
   const existing = db().prepare("SELECT id, status, reason FROM outreach_attempts WHERE idempotency_key=?").get(input.idempotencyKey) as
     | { id: number; status: string; reason: string } | undefined;
@@ -106,9 +85,9 @@ export async function guardedOutreach(input: {
     }
     if (existing) {
       db().prepare(
-        `UPDATE outreach_attempts SET status=?, reason=?, media_hashes=?, body=?, subject=?, lot_ids=?, provider_message_id=COALESCE(?, provider_message_id)
+        `UPDATE outreach_attempts SET status=?, reason=?, media_hashes=?, body=?, subject=?, lot_ids=?, provider_message_id=COALESCE(?, provider_message_id), created_at=CASE WHEN ?='sent' THEN datetime('now') ELSE created_at END
          WHERE id=?`
-      ).run(status, reason, JSON.stringify(mediaHashes), body, subject, JSON.stringify(lotIds), providerMessageId ?? null, existing.id);
+      ).run(status, reason, JSON.stringify(mediaHashes), body, subject, JSON.stringify(lotIds), providerMessageId ?? null, status, existing.id);
       audit("outreach", `attempt_${status}`, {
         entityType: "outreach_attempts",
         entityId: existing.id,
@@ -144,7 +123,7 @@ export async function guardedOutreach(input: {
   }
 
   if (mode === "live") {
-    if (liveSentToday() >= LIVE_DAILY_CAP) {
+    if (LIVE_DAILY_CAP != null && liveSentToday() >= LIVE_DAILY_CAP) {
       return persistCapacity(`daily cap ${LIVE_DAILY_CAP}`, media.pick.hashes, lots.map((l) => l.id), existing);
     }
     if (liveSentToDomainToday(input.domain) >= LIVE_DOMAIN_CAP) {
@@ -152,11 +131,14 @@ export async function guardedOutreach(input: {
     }
   }
 
-  const composed = input.composed && media.pick.lots.length === input.lots.length
-    ? input.composed
-    : composeMessage({ company: input.company, lots });
-  const subject = composed.subject ?? "";
-  const body = composed.body;
+  const rich = composeRichHtml({
+    company: input.company,
+    lots,
+    attachments: media.pick.attachments,
+  });
+  const subject = rich.subject;
+  const body = rich.text;
+  const html = rich.html;
   for (const lot of lots) reserveQueued(to.email, lot.id, input.buyerId);
 
   if (mode === "dry_run") {
@@ -167,6 +149,7 @@ export async function guardedOutreach(input: {
     to: to.email,
     subject,
     body,
+    html,
     attachments: media.pick.attachments,
     lotIds: lots.map((l) => l.id),
     domain: input.domain,

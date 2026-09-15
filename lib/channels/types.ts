@@ -37,6 +37,8 @@ export interface LotBrief {
   quantity: number | null;
   unit_price: number | null;
   brand: string | null;
+  /** Optional supplier description — used only to derive buyer-facing titles. */
+  raw_text?: string | null;
 }
 
 export interface OpportunityContext {
@@ -55,6 +57,7 @@ export interface PreparedOutreach {
   handle: string;
   subject?: string;
   body: string;
+  html?: string;
   mediaHashes: string[];
 }
 

@@ -29,3 +29,9 @@ button, .btn { background: #f3c16b; color: #111; border: 0; border-radius: 8px; 
 .st-idle { color: #9a968c; }
 .st-blocked { color: #e07a7a; }
 .stamp { font-size: 12px; }
+.warm-now { margin-top: 8px; }
+.warm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.warm-card { border-color: #c9a15b; background: #1c1810; }
+.warm-card h2 { text-transform: none; letter-spacing: 0; font-size: 18px; color: #f3c16b; margin-bottom: 4px; }
+.warm-rank { margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #c9a15b; }
+.warm-phone { font-size: 22px; font-weight: 650; margin: 4px 0 8px; }

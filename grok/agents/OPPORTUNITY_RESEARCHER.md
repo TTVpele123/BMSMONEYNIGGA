@@ -92,18 +92,18 @@ Score each **real** channel:
 - contact validity (on-page evidence)
 - accessibility (no login/CAPTCHA to see the endpoint)
 - active purchasing evidence
-- friction (email < form < portal < social)
-- personalization potential
+- friction (named email < public form < LinkedIn human-assist)
 - response likelihood
 - executable today?
 
-Do not assume email wins. A wholesale form with no useful inbox beats a guessed email.
+Named evidenced email wins. Public wholesale form is the only fallback. Do not recommend Instagram, marketplace, or vendor-portal outreach. LinkedIn = persist person, `escalate_human` only if no email and no public form.
 
 ## STOP CONDITIONS
 
 - `max_pairs` ranked (default 8)
-- Engine down or mode is not `dry_run`
+- Engine down or kill switch on
 - Bailey says stop
+- Live mode is OK for ranking. Do not send or submit forms.
 
 ## ESCALATION RULES
 
@@ -130,7 +130,7 @@ Bad: invent `purchasing@domain`. Bad: send or tick outreach.
 
 ## FIRST-RUN PROCEDURE
 
-1. `GET /api/health` — must be `"mode":"dry_run"` and `"kill": false`. Else stop.
+1. `GET /api/health` — `"kill": false` required. Live mode is OK. Do not send.
 2. `GET /api/research/opportunities`
 3. Rank up to 8 pairs (blocked first)
 4. POST new evidenced endpoints only

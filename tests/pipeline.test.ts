@@ -7,7 +7,7 @@ import { runMatching } from "../lib/conversations";
 import { db, killSwitchOn, setSetting } from "../lib/db";
 import { processInbound } from "../lib/inbound";
 import { ingestWhatsApp } from "../lib/intake";
-import { hardDisqualifier, matchBuyerLot, normalizeCategory, validateMandateEvidence } from "../lib/matcher";
+import { hardDisqualifier, inferLotCategory, matchBuyerLot, normalizeCategory, validateMandateEvidence } from "../lib/matcher";
 import { classifyOliverMedia } from "../lib/media";
 import { tick } from "../lib/orchestrator";
 import { guardedOutreach } from "../lib/outreach";
@@ -34,6 +34,12 @@ describe("matcher", () => {
     expect(normalizeCategory("toys-licensed")).toBe("toys");
     expect(normalizeCategory("Nike sneakers")).toBe("footwear-athletic");
     expect(normalizeCategory("skincare closeout")).toBe("health-beauty");
+    expect(normalizeCategory("Lithium-Ion Drill Tool Set")).toBe("tools-hardware");
+    expect(normalizeCategory("Foldable remote-control drone")).toBe("electronics");
+    expect(inferLotCategory("Lithium-Ion Drill Tool Set", "Hoodies and drills in the same caption")).toBe("tools-hardware");
+    expect(inferLotCategory("Available Inventory", "mixed pallet closeout")).toBe("general-merchandise");
+    expect(normalizeCategory("slides / sandals closeout")).toBe("footwear-other");
+    expect(inferLotCategory("Nike slides", "mixed warehouse photos")).toBe("footwear-other");
   });
 
   it("hard DQ wins and mandate rejects are do-not-contact", () => {
@@ -44,6 +50,16 @@ describe("matcher", () => {
       source_evidence: null, confidence: 0.8, disqualified_reason: null,
     };
     expect(hardDisqualifier(buyer, lot)).toMatch(/Wrong category|Capacity/);
+    const toolsLot = { id: 2, category: "tools-hardware", quantity: 100, unit_price: 10, total_price: 1000 };
+    const hoodieLot = { id: 3, category: "apparel-basic", quantity: 1200, unit_price: 4, total_price: 4800 };
+    expect(hardDisqualifier({ ...buyer, categories: "US-MI tool crib clean-outs, surplus materials", txn_capacity_usd: 1_000_000 }, toolsLot)).toBeNull();
+    expect(hardDisqualifier({ ...buyer, categories: "UK clothing stocklots, knitwear parcels", txn_capacity_usd: 1_000_000 }, hoodieLot)).toBeNull();
+    expect(hardDisqualifier({ ...buyer, categories: "UK clothing stocklots", txn_capacity_usd: 1_000_000 }, toolsLot)).toBe("Wrong category");
+    expect(hardDisqualifier(
+      { ...buyer, categories: "industrial asset recovery", txn_capacity_usd: 1_000_000 },
+      toolsLot,
+      ["power-tools"],
+    )).toBeNull();
     const m = matchBuyerLot(
       { ...buyer, categories: "closeout", txn_capacity_usd: 1_000_000 },
       lot,
@@ -86,10 +102,11 @@ describe("suppression", () => {
 });
 
 describe("inbound", () => {
-  it("extracts phone and escalates hot replies", () => {
-    expect(extractPhone("call me at 818-406-8612")).toContain("818");
+  it("extracts phone and escalates hot replies", async () => {
+    expect(extractPhone("call me at 312-555-0199")).toContain("312");
+    expect(extractPhone("call me at 818-406-8612")).toBeNull();
     const buyerId = seedBuyer("hotbuyer.com");
-    const r = processInbound({
+    const r = await processInbound({
       from: "buy@hotbuyer.com",
       text: "Yes we are interested. Call me at 312-555-0199. Can we hop on a call this week?",
       providerMessageId: "m1",
@@ -100,9 +117,9 @@ describe("inbound", () => {
     expect(esc.phone).toContain("312");
   });
 
-  it("unsubscribe is none and suppresses", () => {
+  it("unsubscribe is none and suppresses", async () => {
     seedBuyer("stop.com");
-    const r = processInbound({ from: "buy@stop.com", text: "Please stop emailing us." });
+    const r = await processInbound({ from: "buy@stop.com", text: "Please stop emailing us." });
     expect(r.classification).toBe("unsubscribe");
     expect(isSuppressed("other@stop.com").suppressed).toBe(true);
     expect(classifyReply("Please stop.").classification).toBe("unsubscribe");
@@ -153,7 +170,7 @@ describe("end-to-end dry run", () => {
     const orch = await tick();
     expect(orch.failed).toBe(0);
 
-    const inbound = processInbound({
+    const inbound = await processInbound({
       from: "buy@fitco.com",
       text: "Interested in 5000 units. My cell is 415-555-0100.",
       providerMessageId: "reply-1",
@@ -219,5 +236,31 @@ describe("end-to-end dry run", () => {
     expect(ingestWhatsApp(payload).newMessages).toBe(1);
     expect(ingestWhatsApp(payload).newMessages).toBe(0);
     expect((db().prepare("SELECT COUNT(*) AS n FROM lots").get() as { n: number }).n).toBe(1);
+  });
+
+  it("applies recovered media on a later POST of the same WhatsApp id", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bmsm-late-media-"));
+    const photo = path.join(dir, "late.jpg");
+    writeTestPng(photo);
+    const first = ingestWhatsApp({
+      chat: "oliver",
+      scanned_at: "2026-09-14T17:01:00Z",
+      messages: [{ id: "wa-album-later", at: "2026-09-14T17:01:00Z", text: "Drill sets 3000 $9.80", media: [] }],
+    });
+    expect(first.newMessages).toBe(1);
+    const lot = db().prepare("SELECT id, state FROM lots WHERE external_key='wa:wa-album-later'").get() as { id: number; state: string };
+    expect(lot.state).toBe("paused");
+    const again = ingestWhatsApp({
+      chat: "oliver",
+      scanned_at: "2026-09-14T17:13:00Z",
+      messages: [{ id: "wa-album-later", at: "2026-09-14T17:01:00Z", text: "Drill sets 3000 $9.80", media: [{ filename: "late.jpg", path: photo }] }],
+    });
+    expect(again.newMessages).toBe(0);
+    expect(again.lotsTouched).toContain(lot.id);
+    const media = db().prepare("SELECT COUNT(*) AS n FROM lot_media WHERE lot_id=? AND outreach_safe=1").get(lot.id) as { n: number };
+    expect(media.n).toBe(1);
+    const restored = db().prepare("SELECT state, availability, project_gate FROM lots WHERE id=?").get(lot.id) as { state: string; availability: string; project_gate: string };
+    expect(restored.state).toBe("matchable");
+    expect(restored.availability).toBe("active");
   });
 });

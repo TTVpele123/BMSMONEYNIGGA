@@ -1,7 +1,9 @@
 import { db } from "./db";
 
-export const LIVE_DAILY_CAP = 20;
-export const LIVE_DOMAIN_CAP = 2;
+/** No artificial daily volume target. Null = uncapped by launch quota. */
+export const LIVE_DAILY_CAP: number | null = null;
+/** Deliverability safeguard: max confirmed live first-touch sends per buyer domain per rolling 24h. */
+export const LIVE_DOMAIN_CAP = 4;
 
 export function liveSentToday(): number {
   const row = db().prepare(
@@ -24,8 +26,8 @@ export function liveSentToDomainToday(domain: string): number {
 
 export function liveSendCapacity(domain?: string): {
   dailyUsed: number;
-  dailyRemaining: number;
-  dailyCap: number;
+  dailyRemaining: number | null;
+  dailyCap: number | null;
   domainUsed: number | null;
   domainRemaining: number | null;
   domainCap: number;
@@ -34,7 +36,7 @@ export function liveSendCapacity(domain?: string): {
   const domainUsed = domain ? liveSentToDomainToday(domain) : null;
   return {
     dailyUsed,
-    dailyRemaining: Math.max(0, LIVE_DAILY_CAP - dailyUsed),
+    dailyRemaining: LIVE_DAILY_CAP == null ? null : Math.max(0, LIVE_DAILY_CAP - dailyUsed),
     dailyCap: LIVE_DAILY_CAP,
     domainUsed,
     domainRemaining: domainUsed == null ? null : Math.max(0, LIVE_DOMAIN_CAP - domainUsed),

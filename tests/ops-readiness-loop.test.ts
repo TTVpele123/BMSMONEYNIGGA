@@ -6,6 +6,7 @@ import { POST as postFindings } from "../app/api/research/findings/route";
 import { runMatching } from "../lib/conversations";
 import { outboundMode, db } from "../lib/db";
 import { lotHasSendableMedia, selectSendableLots } from "../lib/email/attachments";
+import { AUTHORIZED_SENDER } from "../lib/email/address";
 import { getGmailClient, sendAuthorizedEmail, setGmailClient } from "../lib/email/provider";
 import { openHandoffs } from "../lib/escalate";
 import { processInbound } from "../lib/inbound";
@@ -167,7 +168,7 @@ describe("operational readiness #1 dry-run sales loop", () => {
     expect(attempt.subject).not.toMatch(/Nike|sneaker/i);
     expect(attempt.body).toContain("Merchandise USA");
     expect(attempt.body).toContain("Hoodies");
-    expect(attempt.body).toContain("8000");
+    expect(attempt.body).toMatch(/8,?000/);
     expect(attempt.body).not.toMatch(/Nike sneakers/i);
     expect(JSON.parse(attempt.media_hashes)).toEqual([HOODIE_SHA]);
     expect(JSON.parse(attempt.media_hashes)).not.toContain(DECOY_SHA);
@@ -182,7 +183,7 @@ describe("operational readiness #1 dry-run sales loop", () => {
 
     const sendCalls: unknown[] = [];
     setGmailClient({
-      profile: async () => ({ emailAddress: "saevitzonoverstock@gmail.com" }),
+      profile: async () => ({ emailAddress: AUTHORIZED_SENDER }),
       send: async (input) => {
         sendCalls.push(input);
         return { ok: true, id: "should-not-send" };
@@ -211,7 +212,7 @@ describe("operational readiness #1 dry-run sales loop", () => {
     expect((db().prepare("SELECT COUNT(*) AS n FROM outreach_attempts WHERE status='sent'").get() as { n: number }).n).toBe(0);
 
     const rematch = await runMatching(hoodieId);
-    expect(rematch.queued).toBeGreaterThanOrEqual(1);
+    expect(rematch.queued).toBe(0);
     expect((db().prepare("SELECT COUNT(*) AS n FROM outreach_attempts WHERE buyer_id=?").get(buyerId) as { n: number }).n).toBe(1);
 
     writeUnsubscribe("buying@merchandiseusa.com");
@@ -228,17 +229,17 @@ describe("operational readiness #1 dry-run sales loop", () => {
     const suppressedAttempt = db().prepare("SELECT id FROM outreach_attempts WHERE buyer_id=?").get(otherId);
     expect(suppressedAttempt).toBeUndefined();
 
-    const inbound = processInbound({
+    const inbound = await processInbound({
       from: "buying@merchandiseusa.com",
       text: "Interested in the hoodies. Call 312-555-0148 for 4000 units.",
       providerMessageId: "ops-loop-reply-1",
     });
     expect(inbound.escalated).toBe(true);
     const handoff = openHandoffs()[0];
-    expect(handoff.packet).toMatch(/OLIVER HANDOFF — do not auto-message Oliver/);
     expect(handoff.packet).toContain("Merchandise USA");
-    expect(handoff.packet).toContain("312");
-    expect(handoff.packet).toContain(String(hoodieId));
+    expect(handoff.packet).toContain("312-555-0148");
+    expect(handoff.packet).toContain("Hoodies");
+    expect(handoff.packet).not.toMatch(/OLIVER HANDOFF/);
     expect((db().prepare("SELECT next_action, state FROM conversations WHERE buyer_id=?").get(buyerId) as { next_action: string; state: string })).toMatchObject({
       state: "escalated",
       next_action: "oliver_handoff",

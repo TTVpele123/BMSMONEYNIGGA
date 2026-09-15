@@ -1,9 +1,26 @@
-import { audit, db } from "./db";
+import { LIVE_DOMAIN_CAP, liveSentToDomainToday } from "./caps";
+import { audit, db, outboundMode } from "./db";
 import { lotHasSendableMedia } from "./email/attachments";
-import { rankBuyersForLot } from "./matcher";
+import { inferLotCategory, rankBuyersForLot } from "./matcher";
 import { createOpportunity, dispatchOpportunity } from "./opportunity";
+import { buyerHasPendingFormJob } from "./channels/form-exec";
+import { hasOutreachPath, recordEndpoint, selectOutreachChannels } from "./channels/select";
+import { extractBuyerEmail } from "./email/address";
+import { buyerLotAlreadyTouched, untouchedLotIds } from "./ledger";
 import { pauseLotsMissingOriginalMedia } from "./repairs";
-import { suppressedDomainSet } from "./suppression";
+import { isDeadInbox, suppressedDomainSet } from "./suppression";
+
+function liveContactEmail(buyerId: number): string | null {
+  const rows = db().prepare(
+    "SELECT email, verification FROM buyer_contacts WHERE buyer_id=? AND email IS NOT NULL"
+  ).all(buyerId) as Array<{ email: string; verification: string }>;
+  for (const row of rows) {
+    if (row.verification === "bounced") continue;
+    const extracted = extractBuyerEmail(row.email);
+    if (extracted.ok && !isDeadInbox(extracted.email)) return extracted.email;
+  }
+  return null;
+}
 
 export function ensureConversation(buyerId: number, channel: string, email: string | null): number {
   const existing = db().prepare("SELECT id FROM conversations WHERE buyer_id=?").get(buyerId) as { id: number } | undefined;
@@ -22,10 +39,15 @@ export function attachLots(conversationId: number, lotIds: number[]): void {
 }
 
 export async function runMatching(lotId: number): Promise<{ matches: number; queued: number }> {
-  const lot = db().prepare("SELECT id, category, quantity, unit_price, total_price, title, brand FROM lots WHERE id=?").get(lotId) as
-    | { id: number; category: string; quantity: number | null; unit_price: number | null; total_price: number | null; title: string; brand: string | null }
+  const lot = db().prepare("SELECT id, category, quantity, unit_price, total_price, title, brand, raw_text FROM lots WHERE id=?").get(lotId) as
+    | { id: number; category: string; quantity: number | null; unit_price: number | null; total_price: number | null; title: string; brand: string | null; raw_text: string | null }
     | undefined;
   if (!lot) return { matches: 0, queued: 0 };
+  const inferred = inferLotCategory(lot.title, `${lot.raw_text ?? ""} ${lot.category}`);
+  if (inferred !== lot.category) {
+    db().prepare("UPDATE lots SET category=?, category_normalized=?, updated_at=datetime('now') WHERE id=?").run(inferred, inferred, lot.id);
+    lot.category = inferred;
+  }
   if (!lotHasSendableMedia(lotId)) {
     pauseLotsMissingOriginalMedia();
     audit("matching", "skipped_no_original_media", { entityType: "lots", entityId: lotId, ok: false });
@@ -59,8 +81,23 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
   db().prepare("UPDATE lots SET state='outreach_active', updated_at=datetime('now') WHERE id=? AND state IN ('structured','media_ready','matchable')").run(lotId);
 
   let queued = 0;
-  const targets = ranked.filter((m) => !m.hardDisqualified && m.score >= 0.45).slice(0, 15);
-  for (const m of targets) {
+  // Walk ranked buyers until we queue up to 20 still-eligible (unsent) targets — do not
+  // burn the matching window on one-touch / already-sent buyers after the daily cap was removed.
+  const rankedEligible = ranked.filter((m) => !m.hardDisqualified && m.score >= 0.45);
+  const sentBuyer = new Set(
+    (db().prepare(
+      "SELECT DISTINCT buyer_id FROM outreach_attempts WHERE status='sent' AND provider_message_id IS NOT NULL AND trim(provider_message_id)!=''"
+    ).all() as { buyer_id: number }[]).map((r) => r.buyer_id),
+  );
+  rankedEligible.sort((a, b) => {
+    const aSent = sentBuyer.has(a.buyerId) ? 1 : 0;
+    const bSent = sentBuyer.has(b.buyerId) ? 1 : 0;
+    if (aSent !== bSent) return aSent - bSent;
+    if (b.score !== a.score) return b.score - a.score;
+    return b.buyerId - a.buyerId;
+  });
+  for (const m of rankedEligible) {
+    if (queued >= 20) break;
     const buyer = buyers.find((b) => b.id === m.buyerId)!;
     const otherLots = db().prepare(
       `SELECT l.id FROM match_scores ms JOIN lots l ON l.id=ms.lot_id
@@ -71,19 +108,29 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
     ).all(buyer.id) as { id: number }[];
     const lotIds = otherLots.map((x) => x.id).filter((id) => lotHasSendableMedia(id));
     if (!lotIds.includes(lotId)) lotIds.unshift(lotId);
-    const topLots = lotIds.filter((id) => lotHasSendableMedia(id)).slice(0, 3);
-    if (!topLots.length) continue;
+    const topLots = untouchedLotIds(buyer.id, lotIds).filter((id) => lotHasSendableMedia(id)).slice(0, 3);
+    if (!topLots.includes(lotId) || !topLots.length) continue;
 
-    const contact = db().prepare("SELECT email FROM buyer_contacts WHERE buyer_id=? AND email IS NOT NULL LIMIT 1").get(buyer.id) as { email: string } | undefined;
-    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", contact?.email ?? null);
+    if (outboundMode() === "live" && liveSentToDomainToday(buyer.domain) >= LIVE_DOMAIN_CAP) continue;
+
+    const contactEmail = liveContactEmail(buyer.id);
+    if (contactEmail) {
+      recordEndpoint({ buyerId: buyer.id, channel: "email", handle: contactEmail, source: "contact_extract" });
+    }
+    if (buyerLotAlreadyTouched(buyer.id, topLots).touched) continue;
+    if (!hasOutreachPath(buyer.id)) continue;
+    const routes = selectOutreachChannels(buyer.id);
+    const hasEmail = routes.some((r) => r.endpoint.channel === "email");
+    if (!hasEmail && buyerHasPendingFormJob(buyer.id)) continue;
+    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", contactEmail);
     attachLots(convoId, topLots);
 
     const convo = db().prepare("SELECT state FROM conversations WHERE id=?").get(convoId) as { state: string };
     if (["replied", "qualified", "escalated", "suppressed"].includes(convo.state)) continue;
 
     const lotRows = db().prepare(
-      `SELECT id, title, category, quantity, unit_price, brand FROM lots WHERE id IN (${topLots.map(() => "?").join(",")})`
-    ).all(...topLots) as { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null }[];
+      `SELECT id, title, category, quantity, unit_price, brand, raw_text FROM lots WHERE id IN (${topLots.map(() => "?").join(",")})`
+    ).all(...topLots) as { id: number; title: string; category: string; quantity: number | null; unit_price: number | null; brand: string | null; raw_text: string | null }[];
 
     const oppId = createOpportunity({ buyerId: buyer.id, conversationId: convoId, lotIds: topLots });
     const dispatched = await dispatchOpportunity({
@@ -95,11 +142,17 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
       lots: lotRows,
     });
 
-    if (dispatched.status === "dry_run" || dispatched.status === "sent" || dispatched.status === "deferred" || dispatched.status === "duplicate") {
+    if (dispatched.status === "dry_run" || dispatched.status === "sent") {
       db().prepare(
         "UPDATE conversations SET state='queued', channel=?, last_outbound_at=datetime('now'), updated_at=datetime('now') WHERE id=?"
       ).run(dispatched.channel ?? "unknown", convoId);
       queued += 1;
+    } else if (dispatched.status === "deferred" || dispatched.status === "duplicate") {
+      // Form/Grok packets and already-attempted rows are not live-send progress.
+      // Do not consume the matching window or the next email-capable buyer is skipped forever.
+      db().prepare(
+        "UPDATE conversations SET channel=?, updated_at=datetime('now') WHERE id=?"
+      ).run(dispatched.channel ?? "unknown", convoId);
     }
   }
   audit("matching", "lot_matched", { entityType: "lots", entityId: lotId, detail: { matches: ranked.length, queued } });

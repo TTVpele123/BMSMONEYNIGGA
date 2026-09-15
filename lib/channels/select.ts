@@ -1,19 +1,25 @@
 import { db } from "../db";
-import { parseRecipient } from "../email/address";
-import { isSuppressed } from "../suppression";
+import { extractBuyerEmail } from "../email/address";
+import { isDeadInbox, isSuppressed } from "../suppression";
 import type { ChannelEndpoint, ChannelId } from "./types";
 
-/** Lower is better. Email is preferred when a real verified inbox exists. */
+/** Channels that may become a sales action. Instagram/portals/phone are research or reject. */
+export const OUTREACH_CHANNELS: ChannelId[] = ["email", "form", "linkedin"];
+
+/** Lower is better. Named email beats a form; form beats last-resort LinkedIn. */
 const FRICTION: Record<ChannelId, number> = {
   email: 1,
   form: 3,
-  marketplace: 4,
-  application: 4,
-  linkedin: 5,
-  instagram: 5,
+  marketplace: 9,
+  application: 9,
+  linkedin: 6,
+  instagram: 9,
   phone: 8,
   other: 9,
 };
+
+const GENERIC_LOCAL = /^(info|sales|hello|contact|office|admin|support|mail)@/i;
+const BUYING_TITLE = /purchas|buyer|merchant|procurement|sourcing|closeout|liquidation|wholesale/i;
 
 export function recordEndpoint(input: {
   buyerId: number;
@@ -26,8 +32,9 @@ export function recordEndpoint(input: {
   let handle = input.handle.trim();
   if (!handle) return;
   if (input.channel === "email") {
-    const parsed = parseRecipient(handle);
+    const parsed = extractBuyerEmail(handle);
     if (!parsed.ok) return;
+    if (isDeadInbox(parsed.email)) return;
     handle = parsed.email;
   }
   db().prepare(
@@ -54,7 +61,7 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
   ).all(buyerId) as Array<{ channel: ChannelId; handle: string; confidence: number; verified: number; source: string | null }>;
   for (const r of stored) {
     if (r.channel === "email") {
-      const parsed = parseRecipient(r.handle);
+      const parsed = extractBuyerEmail(r.handle);
       if (!parsed.ok) continue;
       add({ channel: r.channel, handle: parsed.email, confidence: r.confidence, verified: r.verified === 1, source: r.source ?? "stored" });
       continue;
@@ -68,7 +75,7 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
   for (const c of contacts) {
     const verified = /verified|public_intake|clay/i.test(c.verification ?? "");
     if (c.email) {
-      const parsed = parseRecipient(c.email);
+      const parsed = extractBuyerEmail(c.email);
       if (parsed.ok) add({ channel: "email", handle: parsed.email, confidence: verified ? 0.95 : 0.6, verified, source: "buyer_contacts" });
     }
     if (c.phone) add({ channel: "phone", handle: c.phone, confidence: 0.7, verified, source: "buyer_contacts" });
@@ -76,35 +83,84 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
     if (c.instagram) add({ channel: "instagram", handle: c.instagram, confidence: 0.6, verified, source: "buyer_contacts" });
   }
 
-  return out.filter((e) => !isSuppressed(e.handle).suppressed);
+  return out.filter((e) => e.channel !== "email" ? !isSuppressed(e.handle).suppressed : !isDeadInbox(e.handle));
 }
 
-function scoreEndpoint(e: ChannelEndpoint, preferred?: string): number {
+function namedContactBoost(buyerId: number, e: ChannelEndpoint): number {
+  if (e.channel !== "email") return 0;
+  const contact = db().prepare(
+    "SELECT name, title FROM buyer_contacts WHERE buyer_id=? AND lower(email)=lower(?) LIMIT 1"
+  ).get(buyerId, e.handle) as { name: string | null; title: string | null } | undefined;
+  let boost = 0;
+  if (contact?.name?.trim()) boost += 1.2;
+  if (BUYING_TITLE.test(contact?.title ?? "")) boost += 2;
+  if (GENERIC_LOCAL.test(e.handle) && boost < 2) boost -= 2;
+  return boost;
+}
+
+function historyBoost(buyerId: number, channel: ChannelId): number {
+  if (channel === "form") {
+    const dead = db().prepare(
+      "SELECT COUNT(*) AS n FROM channel_routes WHERE buyer_id=? AND channel='form' AND state IN ('failed','suppressed')"
+    ).get(buyerId) as { n: number };
+    if (dead.n > 0) return -4;
+  }
+  const stats = db().prepare(
+    "SELECT COALESCE(SUM(replies),0) AS replies, COALESCE(SUM(rejects),0) AS rejects FROM buyer_category_stats WHERE buyer_id=?"
+  ).get(buyerId) as { replies: number; rejects: number };
+  if (channel === "email" && stats.rejects >= 2 && stats.replies === 0) return -1.5;
+  if (channel === "email" && stats.replies > 0) return 0.8;
+  return 0;
+}
+
+function scoreEndpoint(buyerId: number, e: ChannelEndpoint, preferred?: string): number {
   const friction = FRICTION[e.channel] ?? 9;
   let score = e.confidence * 10 - friction;
   if (e.verified) score += 2;
   if (preferred && e.channel === preferred) score += 1.5;
   if (e.channel === "email" && !e.verified) score -= 1.5;
+  // Autonomous overnight path is email. A verified form must not outrank a real inbox.
+  if (e.channel === "email") score += 8;
+  score += namedContactBoost(buyerId, e);
+  score += historyBoost(buyerId, e.channel);
   return score;
 }
 
-/**
- * Highest-confidence / lowest-friction available route.
- * Never invents purchasing@domain.
- */
-export function selectChannel(buyerId: number): { endpoint: ChannelEndpoint; score: number; reason: string } | null {
+export type RankedChannel = { endpoint: ChannelEndpoint; score: number; reason: string };
+
+function rankEndpoints(buyerId: number, outreachOnly: boolean): RankedChannel[] {
   const buyer = db().prepare("SELECT outreach_channel FROM buyers WHERE id=?").get(buyerId) as { outreach_channel: string } | undefined;
   const preferred = buyer?.outreach_channel && buyer.outreach_channel !== "unknown" ? buyer.outreach_channel : undefined;
-  const endpoints = listEndpoints(buyerId);
-  if (!endpoints.length) return null;
-
-  const ranked = endpoints
-    .map((e) => ({ endpoint: e, score: scoreEndpoint(e, preferred) }))
+  return listEndpoints(buyerId)
+    .filter((e) => !outreachOnly || OUTREACH_CHANNELS.includes(e.channel))
+    .map((e) => {
+      const score = scoreEndpoint(buyerId, e, preferred);
+      const reason = preferred && e.channel === preferred
+        ? `preferred ${preferred} available`
+        : `${e.channel} score ${score.toFixed(2)} (verified=${e.verified})`;
+      return { endpoint: e, score, reason };
+    })
     .sort((a, b) => b.score - a.score);
+}
 
-  const best = ranked[0];
-  const reason = preferred && best.endpoint.channel === preferred
-    ? `preferred ${preferred} available`
-    : `${best.endpoint.channel} highest score ${best.score.toFixed(2)} (verified=${best.endpoint.verified})`;
-  return { ...best, reason };
+/** All stored routes, best first. Includes research-only handles. */
+export function selectChannels(buyerId: number): RankedChannel[] {
+  return rankEndpoints(buyerId, false);
+}
+
+/** Channels that may be dispatched as a sales action. */
+export function selectOutreachChannels(buyerId: number): RankedChannel[] {
+  return rankEndpoints(buyerId, true);
+}
+
+export function hasOutreachPath(buyerId: number): boolean {
+  return selectOutreachChannels(buyerId).length > 0;
+}
+
+/**
+ * Highest-confidence outreach route. Never invents purchasing@domain.
+ * Instagram/portals are not a sales path.
+ */
+export function selectChannel(buyerId: number): RankedChannel | null {
+  return rankEndpoints(buyerId, true)[0] ?? null;
 }

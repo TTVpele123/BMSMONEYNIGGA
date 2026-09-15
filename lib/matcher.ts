@@ -74,15 +74,16 @@ const GENERALIST = /^(closeouts?|liquidations?|overstock|excess|general|general 
 
 export function normalizeCategory(raw: string): Category {
   const s = (raw || "").toLowerCase();
-  if (/athletic|sneaker|shoe|footwear|trainer|boot/.test(s)) {
+  if (/athletic|sneaker|shoe|footwear|trainer|boot|sandal|slide|slipper|flip-?flop/.test(s)) {
     return /athletic|sneaker|trainer/.test(s) ? "footwear-athletic" : "footwear-other";
   }
   if (/appliance|refrigerator|washer|dryer|microwave|dishwasher/.test(s)) return "appliances";
+  if (/drone|quadcopter|remote-?control/.test(s)) return "electronics";
   if (/electronic|monitor|\btv\b|television|laptop|computer|phone|audio/.test(s)) return "electronics";
   if (/toy|\bgame|puzzle/.test(s)) return "toys";
   if (/licen|character|disney|pokemon|marvel|nfl|nba|mlb/.test(s)) return "apparel-licensed";
   if (/kid|youth|infant|toddler/.test(s)) return "apparel-kids";
-  if (/apparel|clothing|tee|fleece|hoodie|garment|sock/.test(s)) return "apparel-basic";
+  if (/apparel|clothing|tee|fleece|hoodie|garment|sock|cardigan|sweater|knit/.test(s)) return "apparel-basic";
   if (/beauty|cosmetic|health|\bhba\b|skincare|fragrance/.test(s)) return "health-beauty";
   if (/tool|hardware|drill/.test(s)) return "tools-hardware";
   if (/hospitality|restaurant|hotel|foodservice/.test(s)) return "hospitality-supplies";
@@ -91,8 +92,17 @@ export function normalizeCategory(raw: string): Category {
   if (/furniture|mattress|sofa/.test(s)) return "furniture";
   if (/\bcrafts?\b|\bhobby\b/.test(s)) return "crafts";
   if (/home|kitchen|bedding|houseware|decor/.test(s)) return "home-goods";
-  if (/general|closeout|liquidation|surplus|overstock|merchandise|mixed/.test(s)) return "general-merchandise";
+  if (/general|closeout|liquidation|surplus|overstock|merchandise|mixed|inventory|pallet/.test(s)) return "general-merchandise";
   return "other";
+}
+
+/** Title wins when it names a real category. Caption leftovers must not relabel a drill as apparel. */
+export function inferLotCategory(title?: string | null, rawText?: string | null): Category {
+  const fromTitle = normalizeCategory(title ?? "");
+  if (fromTitle !== "other" && fromTitle !== "general-merchandise") return fromTitle;
+  const fromBody = normalizeCategory(rawText ?? "");
+  if (fromBody !== "other") return fromBody;
+  return fromTitle;
 }
 
 export function lotDealValueUsd(lot: LotLike): number {
@@ -110,22 +120,42 @@ function isGeneralist(categoriesCsv: string): boolean {
   return categoriesCsv.split(",").some((c) => GENERALIST.test(c.trim().toLowerCase()));
 }
 
-export function hardDisqualifier(buyer: BuyerLike, lot: LotLike): string | null {
+function categoryFamily(cat: Category): string {
+  return cat.split("-")[0];
+}
+
+/** Canonical classes from a researcher CSV or prose blob. */
+export function buyerNormalizedCategories(raw: string): Category[] {
+  const out = new Set<Category>();
+  if (!raw.trim()) return [];
+  out.add(normalizeCategory(raw));
+  for (const part of raw.split(/[,;/|]+/)) {
+    const n = normalizeCategory(part.trim());
+    if (n !== "other" || /\bother\b/i.test(part)) out.add(n);
+  }
+  return [...out];
+}
+
+export function categoryFitsLot(buyerCategories: string, lotCategory: string, mandateAccepts: string[] = []): boolean {
+  if (!buyerCategories.trim() && !mandateAccepts.length) return true;
+  if (isGeneralist(buyerCategories)) return true;
+  const lotCat = normalizeCategory(lotCategory);
+  const norms = buyerNormalizedCategories(buyerCategories);
+  if (norms.includes(lotCat)) return true;
+  if (norms.some((c) => c !== "other" && categoryFamily(c) === categoryFamily(lotCat))) return true;
+  return mandateAccepts.some((m) => {
+    const n = normalizeCategory(m);
+    return n === lotCat || (n !== "other" && categoryFamily(n) === categoryFamily(lotCat));
+  });
+}
+
+export function hardDisqualifier(buyer: BuyerLike, lot: LotLike, mandateAccepts: string[] = []): string | null {
   if (buyer.disqualified_reason) return `Previously disqualified: ${buyer.disqualified_reason}`;
   if (buyer.verification_status === "mismatch_rejected") return "Entity mismatch";
   if (buyer.channel === "institutional" || /donation/i.test(buyer.channel)) return "Donation-only channel";
   if (buyer.channel === "gov-primes" && /footwear|apparel/i.test(lot.category)) return "Government channel incompatible";
 
-  const cats = buyer.categories.toLowerCase();
-  const lotCat = lot.category.toLowerCase();
-  if (
-    cats &&
-    !isGeneralist(cats) &&
-    !cats.split(",").some((c) => {
-      const t = c.trim();
-      return lotCat.includes(t) || t.includes(lotCat.split(/[\s-]/)[0]);
-    })
-  ) {
+  if (buyer.categories && !categoryFitsLot(buyer.categories, lot.category, mandateAccepts)) {
     return "Wrong category";
   }
 
@@ -146,10 +176,14 @@ export function matchBuyerLot(
   } = {},
 ): UnifiedMatch {
   const cat = normalizeCategory(lot.category);
-  const dq = hardDisqualifier(buyer, lot);
   const liveMandates = (opts.mandates ?? []).filter((m) => m.buyer_id === buyer.id && m.superseded_by == null);
-  const reject = liveMandates.find((m) => m.category === cat && m.stance === "rejects");
-  const accept = liveMandates.find((m) => m.category === cat && m.stance === "accepts");
+  const reject = liveMandates.find((m) => normalizeCategory(m.category) === cat && m.stance === "rejects");
+  const accept = liveMandates.find((m) => normalizeCategory(m.category) === cat && m.stance === "accepts");
+  const dq = hardDisqualifier(
+    buyer,
+    lot,
+    liveMandates.filter((m) => m.stance === "accepts").map((m) => m.category),
+  );
   const stat = (opts.stats ?? []).find((s) => s.buyer_id === buyer.id && s.category === cat);
   const suppressed = opts.suppressedDomains?.has(buyer.domain) ?? false;
 

@@ -111,14 +111,12 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
       dailyUsed: 1,
       dailyRemaining: LIVE_DAILY_CAP == null ? null : LIVE_DAILY_CAP - 1,
       domainUsed: 1,
-      domainRemaining: 1,
+      domainRemaining: LIVE_DOMAIN_CAP - 1,
     });
   });
 
   it("lets confirmed live sends exhaust domain cap; daily volume is uncapped", async () => {
-    const lotA = seedLot("Confirmed A");
-    const lotB = seedLot("Confirmed B");
-    const lotC = seedLot("Confirmed C");
+    const lots = Array.from({ length: LIVE_DOMAIN_CAP + 1 }, (_, i) => seedLot(`Confirmed ${i}`));
     const buyerId = seedBuyer("realcap.com");
     const conversationId = convo(buyerId, "buy@realcap.com");
     setSetting("outbound_mode", "live");
@@ -130,10 +128,9 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     });
 
     for (let i = 0; i < LIVE_DOMAIN_CAP; i++) {
-      const lot = i === 0 ? lotA : lotB;
       const r = await guardedOutreach({
         conversationId, buyerId, email: "buy@realcap.com", domain: "realcap.com",
-        company: "Real", lots: [lot], channel: "email", idempotencyKey: `real-domain-${i}`,
+        company: "Real", lots: [lots[i]], channel: "email", idempotencyKey: `real-domain-${i}`,
       });
       expect(r.status).toBe("sent");
     }
@@ -142,7 +139,7 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
 
     const blockedDomain = await guardedOutreach({
       conversationId, buyerId, email: "buy@realcap.com", domain: "realcap.com",
-      company: "Real", lots: [lotC], channel: "email", idempotencyKey: "real-domain-over",
+      company: "Real", lots: [lots[LIVE_DOMAIN_CAP]], channel: "email", idempotencyKey: "real-domain-over",
     });
     expect(blockedDomain.status).toBe("deferred");
     expect(blockedDomain.reason).toMatch(/domain cap/);
@@ -155,7 +152,7 @@ describe("P0 #4 live caps count provider-confirmed sends only", () => {
     const otherConvo = convo(other, "buy@othercap.com");
     const dailyHit = await guardedOutreach({
       conversationId: otherConvo, buyerId: other, email: "buy@othercap.com", domain: "othercap.com",
-      company: "Other", lots: [lotC], channel: "email", idempotencyKey: "daily-uncapped",
+      company: "Other", lots: [lots[LIVE_DOMAIN_CAP]], channel: "email", idempotencyKey: "daily-uncapped",
     });
     expect(dailyHit.status).toBe("sent");
     expect(dailyHit.reason).not.toMatch(/daily cap/);

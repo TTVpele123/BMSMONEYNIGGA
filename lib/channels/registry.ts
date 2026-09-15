@@ -1,5 +1,6 @@
-import { applicationOperator, formOperator, instagramOperator, linkedinOperator, marketplaceOperator, otherOperator, phoneOperator } from "./deferred";
+import { applicationOperator, instagramOperator, linkedinOperator, marketplaceOperator, otherOperator, phoneOperator } from "./deferred";
 import { emailOperator } from "./email";
+import { formOperator } from "./form-operator";
 import type { ChannelId, ChannelOperator } from "./types";
 
 const operators = new Map<ChannelId, ChannelOperator>([
