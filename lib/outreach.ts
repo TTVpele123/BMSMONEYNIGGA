@@ -5,7 +5,9 @@ import { sendAuthorizedEmail } from "./email/provider";
 import type { ChannelResult } from "./channels/types";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
 import { assertEligible, recordSend, reserveQueued } from "./ledger";
+import { recordOutcome } from "./learning";
 import { isCapacityReason } from "./repairs";
+import { recordQualityOutcome, sourceForEmail } from "./targeting";
 
 export { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSendCapacity, liveSentToday, liveSentToDomainToday } from "./caps";
 
@@ -176,5 +178,7 @@ export async function guardedOutreach(input: {
   }
   const result = persist("sent", "provider accepted", media.pick.hashes, body, subject, lots.map((l) => l.id), sent.id);
   for (const lot of lots) recordSend(to.email, lot.id, input.buyerId);
+  recordOutcome(input.buyerId, "send");
+  recordQualityOutcome(to.email, "delivered", { source: sourceForEmail(to.email) });
   return result;
 }

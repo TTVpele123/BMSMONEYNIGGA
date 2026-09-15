@@ -9,6 +9,7 @@ import { recordOutcome } from "./learning";
 import { markBounced, markReplied } from "./ledger";
 import { recordContact } from "./research";
 import { writeBounce, writeUnsubscribe } from "./suppression";
+import { recordQualityOutcome, sourceForEmail } from "./targeting";
 import { queueOliverHandoff, sendWarmReply, shouldSendWarmReply } from "./warm-inbound";
 
 function findBuyerForAddress(email: string): { id: number; conversation_id: number | null } | undefined {
@@ -120,9 +121,11 @@ export async function processInbound(input: {
   }
   if (buyer && analysis.phone) {
     recordContact({ buyerId: buyer.id, email: from, phone: analysis.phone, verification: "inbound" });
+    recordQualityOutcome(from, "phone_captured", { source: sourceForEmail(from) });
   }
 
   if (buyer && !["bounce", "out_of_office"].includes(analysis.classification)) {
+    recordQualityOutcome(from, "replied", { source: sourceForEmail(from) });
     markReplied(from, buyer.id);
     db().prepare("UPDATE conversations SET state='replied', last_inbound_at=datetime('now'), updated_at=datetime('now') WHERE buyer_id=?").run(buyer.id);
     db().prepare(
@@ -370,6 +373,9 @@ export async function continueWarmInbound(inboundId: number): Promise<{ sent: bo
 export function suppressBouncedAddress(email: string, classification = "bounce"): boolean {
   const addr = extractFailedRecipient(email, email);
   if (!addr) return false;
+  if (classification !== "send_limit") {
+    recordQualityOutcome(addr, "bounced", { source: sourceForEmail(addr) });
+  }
   writeBounce(addr);
   markBounced(addr);
   db().prepare("UPDATE buyer_contacts SET verification='bounced' WHERE lower(email)=lower(?)").run(addr);

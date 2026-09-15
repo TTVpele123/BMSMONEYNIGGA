@@ -7,6 +7,7 @@ export function createEscalation(input: {
   reason: string;
   phone: string | null;
   analysis: ReplyAnalysisT;
+  question?: string;
 }): number {
   let convoId = input.conversationId;
   if (!convoId) {

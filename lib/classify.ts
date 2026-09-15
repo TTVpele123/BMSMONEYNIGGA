@@ -111,3 +111,8 @@ export function classifyReply(raw: string, meta?: { bounced?: boolean; autoReply
 export function isHotLead(a: ReplyAnalysisT): boolean {
   return a.interestLevel === "high" || !!a.phone || a.classification === "request_call" || a.classification === "counterprice";
 }
+
+export function looksLikeAutoAck(text: string): boolean {
+  const t = (text ?? "").toLowerCase();
+  return /out of office|automatic reply|auto(?:matic)?-?reply|this is an automated|no-?reply@|delivery status notification|mailer-daemon/i.test(t);
+}

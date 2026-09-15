@@ -1,13 +1,18 @@
+import { selectChannel } from "./channels/select";
 import { audit, db } from "./db";
 import { lotHasSendableMedia } from "./email/attachments";
 import { rankBuyersForLot } from "./matcher";
 import { createOpportunity, dispatchOpportunity } from "./opportunity";
 import { pauseLotsMissingOriginalMedia } from "./repairs";
 import { suppressedDomainSet } from "./suppression";
+import { applyBetterContact } from "./targeting";
 
 export function ensureConversation(buyerId: number, channel: string, email: string | null): number {
   const existing = db().prepare("SELECT id FROM conversations WHERE buyer_id=?").get(buyerId) as { id: number } | undefined;
-  if (existing) return existing.id;
+  if (existing) {
+    if (email) applyBetterContact(buyerId, email);
+    return existing.id;
+  }
   const info = db().prepare(
     "INSERT INTO conversations(buyer_id,state,channel,contact_email) VALUES(?,'idle',?,?)"
   ).run(buyerId, channel, email);
@@ -74,8 +79,10 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
     const topLots = lotIds.filter((id) => lotHasSendableMedia(id)).slice(0, 3);
     if (!topLots.length) continue;
 
+    const selected = selectChannel(buyer.id);
     const contact = db().prepare("SELECT email FROM buyer_contacts WHERE buyer_id=? AND email IS NOT NULL LIMIT 1").get(buyer.id) as { email: string } | undefined;
-    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", contact?.email ?? null);
+    const email = selected?.endpoint.channel === "email" ? selected.endpoint.handle : contact?.email ?? null;
+    const convoId = ensureConversation(buyer.id, buyer.outreach_channel || selected?.endpoint.channel || "unknown", email);
     attachLots(convoId, topLots);
 
     const convo = db().prepare("SELECT state FROM conversations WHERE id=?").get(convoId) as { state: string };

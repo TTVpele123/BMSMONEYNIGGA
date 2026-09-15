@@ -28,6 +28,8 @@ export interface ChannelEndpoint {
   confidence: number;
   verified: boolean;
   source: string;
+  name?: string;
+  title?: string;
 }
 
 export interface LotBrief {

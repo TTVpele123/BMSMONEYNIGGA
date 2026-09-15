@@ -4,7 +4,8 @@ import type { ChannelId } from "@/lib/channels/types";
 import { CHANNEL_IDS } from "@/lib/channels/types";
 import { audit } from "@/lib/db";
 import { emit } from "@/lib/events";
-import { enrollBuyer, lotEligibleForResearch, recordMandate } from "@/lib/research";
+import { enrollBuyer, lotEligibleForResearch, recordContact, recordMandate } from "@/lib/research";
+import { applyBetterContact, isGuessedRoleEmail } from "@/lib/targeting";
 
 const Finding = z.object({
   agent: z.string(),
@@ -21,6 +22,8 @@ const Finding = z.object({
       handle: z.string(),
       source: z.string(),
       evidence: z.string(),
+      name: z.string().optional(),
+      title: z.string().optional(),
       confidence: z.number().min(0).max(1),
       discovered_at: z.string().optional(),
       outreach_permitted: z.boolean().default(true),
@@ -51,7 +54,7 @@ export async function POST(req: Request) {
       });
       for (const ep of b.endpoints) {
         if (!ep.outreach_permitted) continue;
-        if (ep.channel === "email" && /^(purchasing|info|sales)@/i.test(ep.handle) && !ep.evidence.toLowerCase().includes("mailto")) {
+        if (ep.channel === "email" && isGuessedRoleEmail(ep.handle, ep.evidence)) {
           skippedGuessedEmails.push(`${b.domain}:${ep.handle}`);
           continue;
         }
@@ -63,6 +66,16 @@ export async function POST(req: Request) {
           verified: ep.executable && ep.confidence >= 0.8,
           source: `${body.agent}:${ep.source}`,
         });
+        if (ep.channel === "email") {
+          recordContact({
+            buyerId,
+            email: ep.handle,
+            name: ep.name,
+            title: ep.title,
+            verification: ep.executable && ep.confidence >= 0.8 ? "verified" : (b.verification ?? "unverified"),
+          });
+          applyBetterContact(buyerId, ep.handle);
+        }
       }
       if (b.mandate) {
         recordMandate({

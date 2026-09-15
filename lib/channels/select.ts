@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { parseRecipient } from "../email/address";
 import { isSuppressed } from "../suppression";
+import { rankEmailScore } from "../targeting";
 import type { ChannelEndpoint, ChannelId } from "./types";
 
 /** Lower is better. Email is preferred when a real verified inbox exists. */
@@ -63,13 +64,26 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
   }
 
   const contacts = db().prepare(
-    "SELECT email, phone, linkedin, instagram, verification FROM buyer_contacts WHERE buyer_id=?"
-  ).all(buyerId) as Array<{ email: string | null; phone: string | null; linkedin: string | null; instagram: string | null; verification: string }>;
+    "SELECT email, phone, linkedin, instagram, name, title, verification FROM buyer_contacts WHERE buyer_id=?"
+  ).all(buyerId) as Array<{
+    email: string | null; phone: string | null; linkedin: string | null; instagram: string | null;
+    name: string | null; title: string | null; verification: string;
+  }>;
   for (const c of contacts) {
     const verified = /verified|public_intake|clay/i.test(c.verification ?? "");
     if (c.email) {
       const parsed = parseRecipient(c.email);
-      if (parsed.ok) add({ channel: "email", handle: parsed.email, confidence: verified ? 0.95 : 0.6, verified, source: "buyer_contacts" });
+      if (parsed.ok) {
+        add({
+          channel: "email",
+          handle: parsed.email,
+          confidence: verified ? 0.95 : 0.6,
+          verified,
+          source: "buyer_contacts",
+          name: c.name ?? undefined,
+          title: c.title ?? undefined,
+        });
+      }
     }
     if (c.phone) add({ channel: "phone", handle: c.phone, confidence: 0.7, verified, source: "buyer_contacts" });
     if (c.linkedin) add({ channel: "linkedin", handle: c.linkedin, confidence: 0.65, verified, source: "buyer_contacts" });
@@ -85,6 +99,9 @@ function scoreEndpoint(e: ChannelEndpoint, preferred?: string): number {
   if (e.verified) score += 2;
   if (preferred && e.channel === preferred) score += 1.5;
   if (e.channel === "email" && !e.verified) score -= 1.5;
+  if (e.channel === "email") {
+    score += rankEmailScore(e.handle, { source: e.source, name: e.name, title: e.title }).bonus;
+  }
   return score;
 }
 
@@ -103,8 +120,11 @@ export function selectChannel(buyerId: number): { endpoint: ChannelEndpoint; sco
     .sort((a, b) => b.score - a.score);
 
   const best = ranked[0];
+  const quality = best.endpoint.channel === "email"
+    ? rankEmailScore(best.endpoint.handle, { source: best.endpoint.source, name: best.endpoint.name, title: best.endpoint.title }).quality
+    : best.endpoint.channel;
   const reason = preferred && best.endpoint.channel === preferred
     ? `preferred ${preferred} available`
-    : `${best.endpoint.channel} highest score ${best.score.toFixed(2)} (verified=${best.endpoint.verified})`;
+    : `${best.endpoint.channel} ${quality} score ${best.score.toFixed(2)} (verified=${best.endpoint.verified})`;
   return { ...best, reason };
 }

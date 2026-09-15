@@ -1,8 +1,10 @@
 import { audit, db } from "./db";
+import { extractBuyerEmail, parseRecipient } from "./email/address";
 import { lotHasSendableMedia } from "./email/attachments";
 import { emit } from "./events";
 import { validateMandateEvidence } from "./matcher";
 import { pauseLotsMissingOriginalMedia } from "./repairs";
+import { enqueueContactUpgradeJobs } from "./targeting";
 
 export function discoverQuery(lot: { id: number; category: string; title: string }): string {
   return `wholesale buyers ${lot.category} ${lot.title}`;
@@ -183,7 +185,53 @@ export function recordMandate(input: {
   return id;
 }
 
-export function researchTick(): { queued: number; seeded: number } {
+export function recordContact(input: {
+  buyerId: number;
+  name?: string | null;
+  title?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  linkedin?: string | null;
+  instagram?: string | null;
+  verification?: string;
+}): void {
+  let email: string | null = null;
+  if (input.email) {
+    const parsed = parseRecipient(input.email);
+    if (parsed.ok) email = parsed.email;
+    else {
+      const extracted = extractBuyerEmail(input.email);
+      if (extracted.ok) email = extracted.email;
+    }
+  }
+  const verification = input.verification ?? "unverified";
+  if (email) {
+    const existing = db().prepare(
+      "SELECT id FROM buyer_contacts WHERE buyer_id=? AND lower(email)=lower(?)"
+    ).get(input.buyerId, email) as { id: number } | undefined;
+    if (existing) {
+      db().prepare(
+        `UPDATE buyer_contacts
+            SET name=COALESCE(?, name), title=COALESCE(?, title), phone=COALESCE(?, phone),
+                linkedin=COALESCE(?, linkedin), instagram=COALESCE(?, instagram), verification=?
+          WHERE id=?`
+      ).run(input.name ?? null, input.title ?? null, input.phone ?? null, input.linkedin ?? null, input.instagram ?? null, verification, existing.id);
+      return;
+    }
+    db().prepare(
+      `INSERT INTO buyer_contacts(buyer_id,name,title,email,phone,linkedin,instagram,verification)
+       VALUES(?,?,?,?,?,?,?,?)`
+    ).run(input.buyerId, input.name ?? null, input.title ?? null, email, input.phone ?? null, input.linkedin ?? null, input.instagram ?? null, verification);
+    return;
+  }
+  if (!input.phone && !input.linkedin && !input.instagram) return;
+  db().prepare(
+    `INSERT INTO buyer_contacts(buyer_id,name,title,email,phone,linkedin,instagram,verification)
+     VALUES(?,?,?,?,?,?,?,?)`
+  ).run(input.buyerId, input.name ?? null, input.title ?? null, null, input.phone ?? null, input.linkedin ?? null, input.instagram ?? null, verification);
+}
+
+export function researchTick(): { queued: number; seeded: number; upgrades: number } {
   pauseLotsMissingOriginalMedia();
   const activeLots = db().prepare(
     `SELECT id, category, title FROM lots
@@ -204,9 +252,10 @@ export function researchTick(): { queued: number; seeded: number } {
       if (id && !had) queued += 1;
     }
   }
-  emit("research.tick", { queued }, `research.tick:${new Date().toISOString().slice(0, 13)}`);
-  audit("research", "tick", { detail: { queued, lots: eligible.length } });
-  return { queued, seeded: eligible.length };
+  const upgrades = enqueueContactUpgradeJobs();
+  emit("research.tick", { queued, upgrades }, `research.tick:${new Date().toISOString().slice(0, 13)}`);
+  audit("research", "tick", { detail: { queued, upgrades, lots: eligible.length } });
+  return { queued, seeded: eligible.length, upgrades };
 }
 
 export function enqueueGrokJob(agent: string, instruction: string, input: unknown): number {
