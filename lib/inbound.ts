@@ -1,7 +1,8 @@
 import { audit, db } from "./db";
 import { buyerAuthoredReply, classifyReply, isHotLead, looksLikeAutoAck, type ReplyAnalysisT } from "./classify";
-import { extractFailedRecipient, looksLikeHardBounce } from "./email/bounce";
+import { extractFailedRecipient, looksLikeHardBounce, looksLikeSenderLimit } from "./email/bounce";
 import { isOurMailbox, parseFromHeader } from "./email/address";
+import { noteGmailSenderLimit } from "./email/provider";
 import { emit } from "./events";
 import { createEscalation } from "./escalate";
 import { recordOutcome } from "./learning";
@@ -34,7 +35,7 @@ const CONSUMER_DOMAIN = /^(gmail|googlemail|yahoo|hotmail|outlook|live|icloud|ao
 
 function quotedRecipientEmails(raw: string): string[] {
   const out: string[] = [];
-  for (const line of raw.matchAll(/^(?:To|Cc):\s*(.+)$/gim)) {
+  for (const line of raw.matchAll(/^(?:To|Cc|An|À|Para):\s*(.+)$/gim)) {
     const emails = line[1].match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? [];
     for (const email of emails) {
       const lower = email.toLowerCase();
@@ -71,6 +72,7 @@ export async function processInbound(input: {
   text: string;
   providerMessageId?: string;
   bounced?: boolean;
+  mailbox?: string;
 }): Promise<{ ok: true; classification: string; conversationId: number | null; escalated: boolean; replied: boolean }> {
   const from = parseFromHeader(input.from);
   const existing = input.providerMessageId
@@ -107,6 +109,10 @@ export async function processInbound(input: {
     input.text,
   );
 
+  if (analysis.classification === "send_limit") {
+    noteGmailSenderLimit(45, input.mailbox);
+    unconfirmRecentSendFromLimitNotice(input.text, new Date().toISOString().slice(0, 19).replace("T", " "));
+  }
   if (analysis.classification === "unsubscribe") writeUnsubscribe(from);
   if (analysis.classification === "bounce" || analysis.classification === "suspicious") {
     const bounceEmail = extractFailedRecipient(input.text, from);
@@ -177,6 +183,49 @@ export function closeFalseBounceHandoffs(): number {
   ).run().changes;
 }
 
+function companyFromSendLimitBody(text: string): string | null {
+  const hit = text.match(/Hi (.+?) team/i)?.[1]?.trim();
+  return hit || null;
+}
+
+/** Gmail said this copy was not sent — do not keep it as a confirmed success. Does not suppress the inbox. */
+export function unconfirmRecentSendFromLimitNotice(text: string, dsnAt: string): number {
+  const company = companyFromSendLimitBody(text);
+  if (!company) return 0;
+  const buyer = db().prepare(
+    "SELECT id FROM buyers WHERE lower(company)=lower(?) OR lower(domain)=lower(?) LIMIT 1"
+  ).get(company, company) as { id: number } | undefined;
+  if (!buyer) return 0;
+  return db().prepare(
+    `UPDATE outreach_attempts
+        SET status='failed', reason='gmail send limit — message not sent'
+      WHERE buyer_id=? AND status='sent'
+        AND provider_message_id IS NOT NULL AND trim(provider_message_id)!=''
+        AND created_at >= datetime(?, '-15 minutes')
+        AND created_at <= datetime(?, '+2 minutes')`
+  ).run(buyer.id, dsnAt, dsnAt).changes;
+}
+
+/** Reclassify quota DSNs that were stored as recipient bounces. */
+export function repairSenderLimitNotices(): { reclassified: number; unconfirmed: number } {
+  const rows = db().prepare(
+    `SELECT id, raw_text, created_at FROM inbound_events
+      WHERE classification IN ('bounce','unknown')
+        AND (raw_text LIKE '%reached a limit for sending mail%'
+          OR raw_text LIKE '%Your message was not sent%')`
+  ).all() as Array<{ id: number; raw_text: string; created_at: string }>;
+  let reclassified = 0;
+  let unconfirmed = 0;
+  for (const row of rows) {
+    if (!looksLikeSenderLimit(row.raw_text)) continue;
+    db().prepare("UPDATE inbound_events SET classification='send_limit', interest_level='none' WHERE id=?").run(row.id);
+    reclassified += 1;
+    unconfirmed += unconfirmRecentSendFromLimitNotice(row.raw_text, row.created_at);
+  }
+  if (reclassified) noteGmailSenderLimit();
+  return { reclassified, unconfirmed };
+}
+
 function liftFalseBounceSuppress(email: string): void {
   db().prepare(
     "DELETE FROM suppressions WHERE lower(address_or_domain)=lower(?) AND source='bounce'"
@@ -226,7 +275,7 @@ export function continueMissedPhoneHandoffs(limit = 500): number {
   const rows = db().prepare(
     `SELECT id, buyer_id, conversation_id, from_address, classification, phone, raw_text
      FROM inbound_events
-     WHERE classification NOT IN ('unsubscribe')
+     WHERE classification NOT IN ('unsubscribe','send_limit')
      ORDER BY id DESC LIMIT ?`
   ).all(limit) as Array<{
     id: number; buyer_id: number | null; conversation_id: number | null;
@@ -276,7 +325,7 @@ export async function continueUnansweredWarmInbounds(limit = 200): Promise<numbe
   const rows = db().prepare(
     `SELECT id FROM inbound_events
       WHERE buyer_id IS NOT NULL AND conversation_id IS NOT NULL
-        AND classification NOT IN ('bounce','unsubscribe','suspicious')
+        AND classification NOT IN ('bounce','send_limit','unsubscribe','suspicious')
       ORDER BY id DESC LIMIT ?`
   ).all(limit) as Array<{ id: number }>;
   let n = 0;
@@ -367,6 +416,7 @@ export function replayStoredBounces(): number {
     "SELECT from_address, raw_text FROM inbound_events WHERE classification='bounce'"
   ).all() as Array<{ from_address: string; raw_text: string | null }>;
   for (const r of rows) {
+    if (looksLikeSenderLimit(r.raw_text ?? "")) continue;
     const addr = extractFailedRecipient(r.raw_text ?? "", r.from_address);
     if (addr && !seen.has(addr) && suppressBouncedAddress(addr)) seen.add(addr);
   }

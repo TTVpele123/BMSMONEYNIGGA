@@ -1,34 +1,161 @@
-import { db } from "../db";
+import { db, getSetting, setSetting } from "../db";
 import { assertLiveOutbound } from "../outbound-gate";
-import { AUTHORIZED_SENDER, assertAuthorizedSender, isOurMailbox, parseFromHeader } from "./address";
+import {
+  AUTHORIZED_SENDER,
+  AUTHORIZED_SENDERS,
+  PREVIOUS_SENDER,
+  assertAuthorizedSender,
+  isAuthorizedSender,
+  isOurMailbox,
+  parseFromHeader,
+  type AuthorizedSender,
+} from "./address";
 import { inboxBounceFlags } from "./bounce";
 import { buildRawMessage, type MimeAttachment } from "./mime";
 import {
+  hasSendScope,
   legacyTokensPresent,
   loadLegacyTokens,
+  loadSenderTokens,
   loadTokens,
   oauthClientConfigured,
   refreshAccess,
   refreshLegacyAccess,
   saveLegacyTokens,
   saveTokens,
+  senderHasSendTokens,
   tokensPresent,
 } from "./tokens";
 
 const GMAIL_RETRY_AFTER = /Retry after (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/i;
+const SENDER_IN_REASON = /sender=([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i;
+const COOLDOWN_MAP_KEY = "gmail_sender_cooldowns";
+const LEGACY_LIMIT_KEY = "gmail_sender_limit_until";
+const ACTIVE_SENDER_KEY = "active_sender";
+const HARD_STOP = /account.?disabled|suspended|policy|abuse|unauthorized_client|access.?denied/i;
 
-/** Honor Gmail's last 429 Retry-After. Do not call send again until that instant. */
-export function gmailSendCooldownUntil(): Date | null {
-  const row = db().prepare(
-    `SELECT reason FROM outreach_attempts
-      WHERE status='failed' AND reason LIKE '%Retry after%'
-      ORDER BY id DESC LIMIT 1`
-  ).get() as { reason: string } | undefined;
-  const hit = row?.reason.match(GMAIL_RETRY_AFTER);
-  if (!hit) return null;
-  const until = new Date(hit[1]);
+function laterCooldown(a: Date | null, b: Date | null): Date | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
+function parseFuture(iso: string | undefined): Date | null {
+  if (!iso) return null;
+  const until = new Date(iso);
   if (Number.isNaN(until.getTime()) || until.getTime() <= Date.now()) return null;
   return until;
+}
+
+function readCooldownMap(): Record<string, string> {
+  let map: Record<string, string> = {};
+  try { map = JSON.parse(getSetting(COOLDOWN_MAP_KEY, "{}")); } catch { map = {}; }
+  const legacy = getSetting(LEGACY_LIMIT_KEY, "");
+  if (legacy && !map[AUTHORIZED_SENDER]) map[AUTHORIZED_SENDER] = legacy;
+  return map;
+}
+
+function retryAfterFor(address: string): Date | null {
+  const rows = db().prepare(
+    `SELECT reason FROM outreach_attempts
+      WHERE status='failed' AND reason LIKE '%Retry after%'
+      ORDER BY id DESC LIMIT 8`,
+  ).all() as Array<{ reason: string }>;
+  let latest: Date | null = null;
+  for (const row of rows) {
+    const hit = row.reason.match(GMAIL_RETRY_AFTER);
+    if (!hit) continue;
+    const until = parseFuture(hit[1]);
+    if (!until) continue;
+    const tagged = row.reason.match(SENDER_IN_REASON)?.[1]?.toLowerCase();
+    const applies = tagged ? tagged === address : address === AUTHORIZED_SENDER;
+    if (applies) latest = laterCooldown(latest, until);
+  }
+  return latest;
+}
+
+export function senderCooldownUntil(address: string): Date | null {
+  const v = address.trim().toLowerCase();
+  return laterCooldown(parseFuture(readCooldownMap()[v]), retryAfterFor(v));
+}
+
+export type SenderPoolRow = {
+  address: AuthorizedSender;
+  connected: boolean;
+  send: boolean;
+  cooldownUntil: string | null;
+  status: "available" | "cooling" | "inbox_only" | "disconnected";
+};
+
+export function senderPool(): SenderPoolRow[] {
+  return AUTHORIZED_SENDERS.map((address) => {
+    const tokens = loadSenderTokens(address);
+    const connected = Boolean(tokens?.refresh_token);
+    const send = senderHasSendTokens(address);
+    const cooldown = senderCooldownUntil(address);
+    let status: SenderPoolRow["status"] = "disconnected";
+    if (send && cooldown) status = "cooling";
+    else if (send) status = "available";
+    else if (connected) status = "inbox_only";
+    return {
+      address,
+      connected,
+      send,
+      cooldownUntil: cooldown?.toISOString() ?? null,
+      status,
+    };
+  });
+}
+
+export function pickAvailableSender(injectedAddress?: string | null): AuthorizedSender | null {
+  const hint = injectedAddress?.trim().toLowerCase();
+  for (const address of AUTHORIZED_SENDERS) {
+    if (senderCooldownUntil(address)) continue;
+    if (hint) {
+      if (address === hint && isAuthorizedSender(address)) return address;
+      continue;
+    }
+    if (senderHasSendTokens(address)) return address;
+  }
+  return null;
+}
+
+/** Null if any authorized send-capable mailbox is free. Otherwise the soonest recovery instant. */
+export function gmailSendCooldownUntil(): Date | null {
+  const sendable = AUTHORIZED_SENDERS.filter((a) => senderHasSendTokens(a));
+  if (sendable.some((a) => !senderCooldownUntil(a))) return null;
+  if (sendable.length === 0) return senderCooldownUntil(AUTHORIZED_SENDER);
+  let soonest: Date | null = null;
+  for (const a of sendable) {
+    const until = senderCooldownUntil(a);
+    if (until && (!soonest || until.getTime() < soonest.getTime())) soonest = until;
+  }
+  return soonest;
+}
+
+/** Gmail told us this mailbox did not send. Pause that sender only. */
+export function noteGmailSenderLimit(minutes = 45, address: string = AUTHORIZED_SENDER): Date {
+  const v = address.trim().toLowerCase();
+  const target = isAuthorizedSender(v) ? v : AUTHORIZED_SENDER;
+  const existing = senderCooldownUntil(target);
+  const next = new Date(Date.now() + minutes * 60_000);
+  const until = existing && existing.getTime() > next.getTime() ? existing : next;
+  const map = readCooldownMap();
+  map[target] = until.toISOString();
+  setSetting(COOLDOWN_MAP_KEY, JSON.stringify(map));
+  if (target === AUTHORIZED_SENDER) setSetting(LEGACY_LIMIT_KEY, until.toISOString());
+  return until;
+}
+
+export function activeSender(): AuthorizedSender {
+  const stored = getSetting(ACTIVE_SENDER_KEY, "").trim().toLowerCase();
+  if (isAuthorizedSender(stored)) return stored;
+  return pickAvailableSender() ?? AUTHORIZED_SENDER;
+}
+
+function isCapacityLimitError(error: string): boolean {
+  if (HARD_STOP.test(error)) return false;
+  return /429|retry after|mail sending|sending limit|user-rate-limit|quota/i.test(error);
 }
 
 export type GmailSendInput = {
@@ -39,6 +166,7 @@ export type GmailSendInput = {
   attachments: MimeAttachment[];
   lotIds?: number[];
   domain?: string;
+  from?: string;
 };
 
 export type GmailSendResult = { ok: true; id: string } | { ok: false; error: string };
@@ -71,7 +199,7 @@ export function setGmailClient(client: GmailClient | null): void {
 export { AUTHORIZED_SENDER };
 
 export function gmailConfigured(): boolean {
-  return injected != null || (oauthClientConfigured() && tokensPresent());
+  return injected != null || (oauthClientConfigured() && AUTHORIZED_SENDERS.some((a) => senderHasSendTokens(a)));
 }
 
 export function gmailInboxConfigured(): boolean {
@@ -117,17 +245,21 @@ const liveClient: GmailClient = {
     return r.json() as Promise<{ emailAddress?: string }>;
   },
   async send(input) {
+    const from = (input.from ?? AUTHORIZED_SENDER).trim().toLowerCase();
+    const allowed = assertAuthorizedSender(from);
+    if (!allowed.ok) return { ok: false, error: allowed.reason };
     const gate = assertLiveOutbound({ to: input.to, domain: input.domain, lotIds: input.lotIds });
     if (!gate.ok) return { ok: false, error: gate.reason };
     const raw = buildRawMessage({
-      from: AUTHORIZED_SENDER,
+      from,
       to: input.to,
       subject: input.subject,
       body: input.body,
       html: input.html,
       attachments: input.attachments,
     });
-    const r = await gmailFetch("messages/send", {
+    const fetchFn = from === PREVIOUS_SENDER ? gmailFetchLegacy : gmailFetch;
+    const r = await fetchFn("messages/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ raw }),
@@ -237,7 +369,7 @@ export async function fetchRecentBounceMessages(): Promise<GmailInboxMessage[]> 
   return out;
 }
 
-/** Read-only Saefam inbox. Never used by send. */
+/** Saefam inbox (and send, when that mailbox has send scope). */
 export async function listLegacyInbox(historyId: string | null): Promise<GmailInboxPage> {
   if (injected?.listLegacyInbox) return injected.listLegacyInbox(historyId);
   if (injected || !oauthClientConfigured() || !legacyTokensPresent()) {
@@ -278,28 +410,71 @@ export function getGmailClient(): GmailClient {
   };
 }
 
-export async function assertGmailIdentity(): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const from = assertAuthorizedSender(AUTHORIZED_SENDER);
+export async function assertGmailIdentity(sender: string = AUTHORIZED_SENDER): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const from = assertAuthorizedSender(sender);
   if (!from.ok) return from;
+  const wanted = sender.trim().toLowerCase();
   if (injected) {
     const profile = await injected.profile();
     const actual = profile?.emailAddress?.trim().toLowerCase();
-    if (actual !== AUTHORIZED_SENDER) return { ok: false, reason: `authenticated Gmail identity ${actual ?? "unknown"} is not authorized` };
+    if (!actual || !isAuthorizedSender(actual)) {
+      return { ok: false, reason: `authenticated Gmail identity ${actual ?? "unknown"} is not authorized` };
+    }
+    if (actual !== wanted) return { ok: false, reason: `authenticated Gmail identity ${actual} is not ${wanted}` };
     return { ok: true };
   }
-  if (!gmailConfigured()) return { ok: false, reason: "Gmail OAuth tokens not configured" };
-  const stored = loadTokens();
-  if (!stored || stored.address !== AUTHORIZED_SENDER) return { ok: false, reason: "stored Gmail identity is not authorized" };
-  const profile = await liveClient.profile();
-  const actual = profile?.emailAddress?.trim().toLowerCase();
-  if (actual !== AUTHORIZED_SENDER) return { ok: false, reason: `authenticated Gmail identity ${actual ?? "unknown"} is not authorized` };
+  if (!senderHasSendTokens(wanted) && !(wanted === AUTHORIZED_SENDER && tokensPresent() && hasSendScope(loadTokens()))) {
+    return { ok: false, reason: `Gmail send tokens not configured for ${wanted}` };
+  }
+  const stored = loadSenderTokens(wanted);
+  if (!stored || stored.address !== wanted) return { ok: false, reason: "stored Gmail identity is not authorized" };
+  const fetchFn = wanted === PREVIOUS_SENDER ? gmailFetchLegacy : gmailFetch;
+  const r = await fetchFn("profile");
+  if (!r.ok) return { ok: false, reason: `Gmail profile ${r.status}` };
+  const profile = await r.json() as { emailAddress?: string };
+  const actual = profile.emailAddress?.trim().toLowerCase();
+  if (actual !== wanted) return { ok: false, reason: `authenticated Gmail identity ${actual ?? "unknown"} is not authorized` };
   return { ok: true };
 }
 
 export async function sendAuthorizedEmail(input: GmailSendInput): Promise<GmailSendResult> {
-  const cooldown = gmailSendCooldownUntil();
-  if (cooldown) return { ok: false, error: `gmail 429 cooldown until ${cooldown.toISOString()}` };
-  const identity = await assertGmailIdentity();
-  if (!identity.ok) return { ok: false, error: identity.reason };
-  return getGmailClient().send(input);
+  if (injected) {
+    const profile = await injected.profile();
+    const chosen = pickAvailableSender(profile?.emailAddress);
+    if (!chosen) {
+      const until = senderCooldownUntil(profile?.emailAddress ?? AUTHORIZED_SENDER) ?? gmailSendCooldownUntil();
+      return { ok: false, error: until ? `gmail 429 cooldown until ${until.toISOString()}` : "no authorized sender with capacity" };
+    }
+    const identity = await assertGmailIdentity(chosen);
+    if (!identity.ok) return { ok: false, error: identity.reason };
+    return getGmailClient().send({ ...input, from: chosen });
+  }
+
+  const tried: string[] = [];
+  let last: GmailSendResult = { ok: false, error: "no authorized sender with capacity" };
+  for (const sender of AUTHORIZED_SENDERS) {
+    if (senderCooldownUntil(sender) || !senderHasSendTokens(sender)) continue;
+    tried.push(sender);
+    const identity = await assertGmailIdentity(sender);
+    if (!identity.ok) {
+      last = { ok: false, error: identity.reason };
+      continue;
+    }
+    const sent = await getGmailClient().send({ ...input, from: sender });
+    if (sent.ok) {
+      setSetting(ACTIVE_SENDER_KEY, sender);
+      return sent;
+    }
+    last = sent;
+    if (isCapacityLimitError(sent.error)) {
+      noteGmailSenderLimit(45, sender);
+      continue;
+    }
+    return sent;
+  }
+  const until = gmailSendCooldownUntil();
+  if (until && /429|limit|cooldown|quota/i.test(last.error)) {
+    return { ok: false, error: `gmail 429 cooldown until ${until.toISOString()}` };
+  }
+  return last;
 }

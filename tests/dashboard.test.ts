@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LIVE_DOMAIN_CAP } from "../lib/caps";
 import { dealDashboard } from "../lib/dashboard";
 import { db, setSetting } from "../lib/db";
 import { enrollBuyer } from "../lib/research";
@@ -52,6 +53,11 @@ describe("deal dashboard counts", () => {
     expect(after.today.sends).toBe(1);
     expect(after.today.oliverDelivered).toBe(1);
     expect(after.pipeline.stages.find((s) => s.key === "oliver")?.n).toBe(1);
+    expect(after.system.domainCap).toBe(LIVE_DOMAIN_CAP);
+    expect(after.system.domainCap).toBe(4);
+    expect(typeof after.system.emailSendable).toBe("number");
+    expect(after.system.senders?.length).toBeGreaterThanOrEqual(2);
+    expect(after.system.sender).toBeTruthy();
   });
 
   it("counts today replies and phones, not bounces as replies", () => {
@@ -62,13 +68,24 @@ describe("deal dashboard counts", () => {
     ).run(buyerId);
     db().prepare(
       `INSERT INTO inbound_events(buyer_id,from_address,classification,interest_level,raw_text)
-       VALUES(?,'mailer-daemon@google.com','bounce','none','550')`,
+       VALUES(?,'dead@dashreply.com','bounce','none','550 address not found')`,
     ).run(buyerId);
+    db().prepare(
+      `INSERT INTO inbound_events(from_address,classification,interest_level,raw_text)
+       VALUES('mailer-daemon@googlemail.com','bounce','none','You have reached a limit for sending mail. Your message was not sent.')`,
+    ).run();
+    db().prepare(
+      `INSERT INTO inbound_events(from_address,classification,interest_level,raw_text)
+       VALUES('mailer-daemon@googlemail.com','send_limit','none','You have reached a limit for sending mail. Your message was not sent.')`,
+    ).run();
     const d = dealDashboard();
     expect(d.today.replies).toBe(1);
     expect(d.today.phones).toBe(1);
     expect(d.today.bounces).toBe(1);
     expect(d.today.warm).toBe(1);
+    expect(d.warmest.length).toBeLessThanOrEqual(3);
     expect(d.warmest.some((w) => w.domain === "dashreply.com" && w.phone?.includes("415"))).toBe(true);
+    expect(d.warmest.every((w) => w.classification !== "bounce")).toBe(true);
+    expect(d.warmest.find((w) => w.domain === "dashreply.com")?.nextAction).toMatch(/Oliver|phone/i);
   });
 });

@@ -28,10 +28,14 @@ export async function GET(req: Request) {
     return Response.json({ ok: false, error: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required" }, { status: 400 });
   }
   const mailbox = new URL(req.url).searchParams.get("mailbox");
-  if (mailbox && mailbox !== "legacy") {
-    return Response.json({ ok: false, error: "mailbox must be omitted or legacy" }, { status: 400 });
+  if (mailbox && mailbox !== "legacy" && mailbox !== "saefam") {
+    return Response.json({ ok: false, error: "mailbox must be omitted, legacy, or saefam" }, { status: 400 });
   }
-  const intent: GmailOAuthMailbox = mailbox === "legacy" ? "legacy_inbound" : "send";
+  const intent: GmailOAuthMailbox = mailbox === "legacy"
+    ? "legacy_inbound"
+    : mailbox === "saefam"
+      ? "saefam_send"
+      : "send";
   const state = crypto.randomBytes(16).toString("hex");
   pushState(state, intent);
   return Response.redirect(gmailAuthorizationUrl(state, intent));

@@ -1,5 +1,5 @@
 import { getSetting, setSetting, audit } from "@/lib/db";
-import { AUTHORIZED_SENDER, PREVIOUS_SENDER } from "@/lib/email/address";
+import { PREVIOUS_SENDER } from "@/lib/email/address";
 import { exchangeAuthorizationCode, expectedAddressForMailbox, type GmailOAuthMailbox } from "@/lib/email/tokens";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +24,9 @@ function takeMailbox(state: string | null): GmailOAuthMailbox {
   const raw = state ? mailboxes[state] : "";
   if (state) delete mailboxes[state];
   setSetting("gmail_oauth_mailboxes", JSON.stringify(mailboxes));
-  return raw === "legacy_inbound" ? "legacy_inbound" : "send";
+  if (raw === "legacy_inbound") return "legacy_inbound";
+  if (raw === "saefam_send") return "saefam_send";
+  return "send";
 }
 
 export async function GET(req: Request) {
@@ -46,7 +48,7 @@ export async function GET(req: Request) {
   const mailbox = takeMailbox(state);
   const expected = expectedAddressForMailbox(mailbox);
   try {
-    const tokens = await exchangeAuthorizationCode(code, { expected });
+    const tokens = await exchangeAuthorizationCode(code, { expected, mailbox });
     if (tokens.address !== expected) {
       audit("gmail", "oauth_failed", { ok: false, detail: { error: "wrong mailbox", address: tokens.address, expected } });
       return new Response(
@@ -59,7 +61,13 @@ export async function GET(req: Request) {
     });
     if (mailbox === "legacy_inbound") {
       return new Response(
-        `<html><body><p>Legacy inbox connected read-only as <b>${PREVIOUS_SENDER}</b>.</p><p>This mailbox cannot send. Live outbound stays ${AUTHORIZED_SENDER}.</p></body></html>`,
+        `<html><body><p>Saefam inbox connected read-only as <b>${PREVIOUS_SENDER}</b>.</p><p>This mailbox cannot send until reconnected with send. Open <a href="/api/gmail/oauth/start?mailbox=saefam">/api/gmail/oauth/start?mailbox=saefam</a>.</p></body></html>`,
+        { headers: { "Content-Type": "text/html; charset=utf-8" } },
+      );
+    }
+    if (mailbox === "saefam_send") {
+      return new Response(
+        `<html><body><p>Saefam joined the sender pool as <b>${tokens.address}</b>.</p><p>Outbound still honors kill switch, guardedOutreach, and per-sender Gmail cooldown.</p></body></html>`,
         { headers: { "Content-Type": "text/html; charset=utf-8" } },
       );
     }

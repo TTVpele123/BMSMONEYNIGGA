@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { dataRoot } from "../paths";
-import { AUTHORIZED_SENDER, PREVIOUS_SENDER } from "./address";
+import { AUTHORIZED_SENDER, PREVIOUS_SENDER, isAuthorizedSender, isDeniedSender } from "./address";
 import { decryptJson, encryptJson } from "./crypto";
 
 export function gmailRedirectUri(): string {
@@ -27,7 +27,11 @@ export type GmailTokenFile = {
   updated_at: string;
 };
 
-export type GmailOAuthMailbox = "send" | "legacy_inbound";
+export type GmailOAuthMailbox = "send" | "legacy_inbound" | "saefam_send";
+
+export function hasSendScope(tokens: { scopes?: string[] } | null | undefined): boolean {
+  return Boolean(tokens?.scopes?.some((s) => s.includes("gmail.send")));
+}
 
 function tokenDir(): string {
   const dir = path.join(dataRoot(), "data");
@@ -73,6 +77,28 @@ export function saveTokens(tokens: Omit<GmailTokenFile, "updated_at">): void {
     throw new Error(`refusing to store send tokens for ${tokens.address}`);
   }
   writeTokenFile(tokenPath(), tokens);
+}
+
+/** Persist tokens for any authorized business sender into that mailbox's existing file. */
+export function saveSenderTokens(tokens: Omit<GmailTokenFile, "updated_at">): void {
+  const address = tokens.address.trim().toLowerCase();
+  if (isDeniedSender(address) || !isAuthorizedSender(address)) {
+    throw new Error(`refusing to store tokens for ${tokens.address}`);
+  }
+  if (address === AUTHORIZED_SENDER) saveTokens({ ...tokens, address });
+  else saveLegacyTokens({ ...tokens, address });
+}
+
+export function loadSenderTokens(address: string): GmailTokenFile | null {
+  const v = address.trim().toLowerCase();
+  if (v === AUTHORIZED_SENDER) return loadTokens();
+  if (v === PREVIOUS_SENDER) return loadLegacyTokens();
+  return null;
+}
+
+export function senderHasSendTokens(address: string): boolean {
+  const t = loadSenderTokens(address);
+  return Boolean(t?.refresh_token && hasSendScope(t));
 }
 
 export function saveLegacyTokens(tokens: Omit<GmailTokenFile, "updated_at">): void {
@@ -142,16 +168,16 @@ export async function refreshLegacyAccess(fetchImpl: typeof fetch = fetch): Prom
 }
 
 export function expectedAddressForMailbox(mailbox: GmailOAuthMailbox): string {
-  return mailbox === "legacy_inbound" ? PREVIOUS_SENDER : AUTHORIZED_SENDER;
+  return mailbox === "send" ? AUTHORIZED_SENDER : PREVIOUS_SENDER;
 }
 
 export async function exchangeAuthorizationCode(
   code: string,
-  opts: { expected?: string; fetchImpl?: typeof fetch } = {},
+  opts: { expected?: string; fetchImpl?: typeof fetch; mailbox?: GmailOAuthMailbox } = {},
 ): Promise<GmailTokenFile> {
   const expected = (opts.expected ?? AUTHORIZED_SENDER).trim().toLowerCase();
   const fetchImpl = opts.fetchImpl ?? fetch;
-  if (expected !== AUTHORIZED_SENDER && expected !== PREVIOUS_SENDER) {
+  if (!isAuthorizedSender(expected) || isDeniedSender(expected)) {
     throw new Error(`mailbox ${expected} is not allowed`);
   }
   const r = await fetchImpl("https://oauth2.googleapis.com/token", {
@@ -177,7 +203,9 @@ export async function exchangeAuthorizationCode(
   if (address !== expected) {
     throw new Error(`authenticated as ${address || "unknown"}, expected ${expected}`);
   }
-  const defaultScopes = expected === PREVIOUS_SENDER ? GMAIL_LEGACY_INBOUND_SCOPES.join(" ") : GMAIL_SCOPES.join(" ");
+  const defaultScopes = opts.mailbox === "legacy_inbound"
+    ? GMAIL_LEGACY_INBOUND_SCOPES.join(" ")
+    : GMAIL_SCOPES.join(" ");
   const tokens: Omit<GmailTokenFile, "updated_at"> = {
     address,
     refresh_token: j.refresh_token,
@@ -185,7 +213,6 @@ export async function exchangeAuthorizationCode(
     expiry: new Date(Date.now() + (j.expires_in ?? 3500) * 1000).toISOString(),
     scopes: (j.scope ?? defaultScopes).split(/\s+/).filter(Boolean),
   };
-  if (expected === AUTHORIZED_SENDER) saveTokens(tokens);
-  else saveLegacyTokens(tokens);
+  saveSenderTokens(tokens);
   return { ...tokens, updated_at: new Date().toISOString() };
 }

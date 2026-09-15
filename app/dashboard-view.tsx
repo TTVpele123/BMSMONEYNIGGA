@@ -64,6 +64,24 @@ export function DashboardView() {
         </section>
       )}
 
+      <section aria-label="Warmest leads" className="warm-now">
+        <h2 className="sec">Do not lose these 3</h2>
+        {data.warmest.length === 0 ? <p className="muted">No live conversations yet</p> : (
+          <div className="warm-grid">
+            {data.warmest.slice(0, 3).map((w, i) => (
+              <article key={`${w.id}-${w.created_at}`} className="card warm-card">
+                <p className="warm-rank">#{i + 1}</p>
+                <h2>{w.company}</h2>
+                <p className="warm-phone">{w.phone || "no phone yet"}</p>
+                <p>{w.nextAction}</p>
+                <p className="muted">{w.interest_level} / {w.classification} · {when(w.created_at)}</p>
+                <p className="muted">{w.domain}{w.lot_ids ? ` · lots ${w.lot_ids}` : ""}</p>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section aria-label="Today">
         <h2 className="sec">Today</h2>
         <div className="grid">
@@ -71,7 +89,8 @@ export function DashboardView() {
           <div className="card"><h2>Replies</h2><div className="n">{t.replies}</div></div>
           <div className="card"><h2>Phones captured</h2><div className="n">{t.phones}</div></div>
           <div className="card"><h2>Oliver delivered</h2><div className="n">{t.oliverDelivered}</div><p className="muted">queued {t.oliverQueued} — not counted</p></div>
-          <div className="card"><h2>Bounces</h2><div className="n">{t.bounces}</div></div>
+          <div className="card"><h2>Send capacity</h2><div className="n">{num(sys.emailSendable)}</div><p className="muted">domain cap {sys.domainCap} / rolling 24h</p></div>
+          <div className="card"><h2>Bounces</h2><div className="n">{t.bounces}</div><p className="muted">unique failed inboxes</p></div>
           <div className="card"><h2>Interested / warm</h2><div className="n">{t.warm}</div></div>
         </div>
       </section>
@@ -121,25 +140,6 @@ export function DashboardView() {
         )}
       </section>
 
-      <section aria-label="Warmest">
-        <h2 className="sec">Warmest right now</h2>
-        {data.warmest.length === 0 ? <p className="muted">No warm replies yet today</p> : (
-          <table>
-            <thead><tr><th>Buyer</th><th>Phone</th><th>Interest</th><th>When</th></tr></thead>
-            <tbody>
-              {data.warmest.map((w) => (
-                <tr key={`${w.id}-${w.created_at}`}>
-                  <td>{w.company} · {w.domain}</td>
-                  <td>{w.phone || "—"}</td>
-                  <td>{w.interest_level} / {w.classification}</td>
-                  <td>{when(w.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-
       <section aria-label="Agents">
         <h2 className="sec">Agents</h2>
         <table>
@@ -173,13 +173,18 @@ export function DashboardView() {
 
       <section className="card gmail-connect" aria-label="System">
         <h2>System</h2>
-        <p>Engine {sys.engine} · kill {sys.kill ? "ON" : "off"} · sender {sys.sender} {sys.senderConnected ? "connected" : "down"}</p>
+        <p>Engine {sys.engine} · kill {sys.kill ? "ON" : "off"} · active sender {sys.sender} {sys.senderConnected ? "connected" : "down"}</p>
         <p className="muted">
-          Saefam inbound {sys.legacyConnected ? "read-only connected" : "not connected"} ·
-          domain cap {sys.domainCap}/day · daily volume cap {sys.dailyCap ?? "none"} ·
+          Saefam inbound {sys.legacyConnected ? "connected" : "not connected"} ·
+          domain cap {sys.domainCap} confirmed first-touch / rolling 24h · daily volume cap {sys.dailyCap ?? "none"} ·
           rolling-day confirmed {sys.rollingDaySends} ·
           sendable now {num(sys.emailSendable)} · untouched {num(sys.eligibleUntouched)}
         </p>
+        {sys.senders?.map((s) => (
+          <p key={s.address} className="muted">
+            {s.address} · {s.status}{s.cooldownUntil ? ` until ${when(s.cooldownUntil)}` : ""}
+          </p>
+        ))}
         <p className="muted">
           Last confirmed send {when(sys.lastConfirmedSendAt)} ·
           last scheduler cycle {when(sys.scheduler.lastSuccessfulSchedulerCycleAt)} ·
@@ -187,7 +192,9 @@ export function DashboardView() {
           {sys.scheduler.scheduler_unhealthy ? sys.scheduler.scheduler_unhealthy_reason : "scheduler healthy"}
         </p>
         {sys.cooldownUntil && <p className="muted">Gmail cooldown until {when(sys.cooldownUntil)}</p>}
-        <a className="btn" href="/api/gmail/oauth/start">Reconnect sender</a>
+        <a className="btn" href="/api/gmail/oauth/start">Reconnect Saevitzon sender</a>
+        {" "}
+        <a className="btn" href="/api/gmail/oauth/start?mailbox=saefam">Connect Saefam sender</a>
         {" "}
         <a className="btn" href="/api/gmail/oauth/start?mailbox=legacy">Reconnect Saefam inbox</a>
         {error && <p className="muted">Last refresh error: {error}</p>}

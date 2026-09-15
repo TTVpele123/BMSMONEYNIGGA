@@ -7,14 +7,14 @@ import { db, outboundMode, setSetting } from "../lib/db";
 import { AUTHORIZED_SENDER, DENIED_SENDER, PREVIOUS_SENDER, assertAuthorizedSender, extractBuyerEmail, parseRecipient } from "../lib/email/address";
 import { selectSendableLots } from "../lib/email/attachments";
 import { buildRawMessage } from "../lib/email/mime";
-import { sendAuthorizedEmail, setGmailClient, type GmailClient, type GmailSendInput } from "../lib/email/provider";
+import { gmailSendCooldownUntil, sendAuthorizedEmail, setGmailClient, type GmailClient, type GmailSendInput } from "../lib/email/provider";
 import { extractFailedRecipient, inboxBounceFlags } from "../lib/email/bounce";
 import { syncGmailInbox } from "../lib/email/sync";
 import { gmailAuthorizationUrl } from "../lib/email/oauth";
 import { GMAIL_LEGACY_INBOUND_SCOPES, GMAIL_SCOPES, legacyTokenPath, loadLegacyTokens, loadTokens, saveLegacyTokens, saveTokens, tokenPath } from "../lib/email/tokens";
 import { processInbound } from "../lib/inbound";
 import { ingestWhatsApp } from "../lib/intake";
-import { guardedOutreach } from "../lib/outreach";
+import { guardedOutreach, LIVE_DOMAIN_CAP } from "../lib/outreach";
 import { enrollBuyer } from "../lib/research";
 import { isSuppressed } from "../lib/suppression";
 import { writeTestPng } from "./png";
@@ -99,7 +99,7 @@ describe("1 Gmail provider + MIME + From lock", () => {
       to: "buy@fitco.com",
       subject: "x",
       body: "y",
-    })).toThrow(/From must be/);
+    })).toThrow(/banned from automation|authorized business sender/);
     expect(assertAuthorizedSender(DENIED_SENDER).ok).toBe(false);
     expect(GMAIL_SCOPES).toEqual([
       "https://www.googleapis.com/auth/gmail.send",
@@ -111,6 +111,9 @@ describe("1 Gmail provider + MIME + From lock", () => {
     expect(legacyUrl).toContain(encodeURIComponent(PREVIOUS_SENDER));
     expect(legacyUrl).toContain(encodeURIComponent(GMAIL_LEGACY_INBOUND_SCOPES[0]));
     expect(legacyUrl).not.toContain("gmail.send");
+    const saefamUrl = gmailAuthorizationUrl("state-saefam", "saefam_send");
+    expect(saefamUrl).toContain(encodeURIComponent(PREVIOUS_SENDER));
+    expect(saefamUrl).toContain("gmail.send");
     expect(() => saveTokens({
       address: PREVIOUS_SENDER,
       refresh_token: "x",
@@ -150,22 +153,22 @@ describe("1 Gmail provider + MIME + From lock", () => {
     });
     expect(result.status).toBe("failed");
     expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/not authorized|banned/);
+    expect(result.reason).toMatch(/not authorized|banned|no authorized sender/);
   });
 
-  it("refuses live send when authenticated as the legacy Saefam mailbox", async () => {
+  it("sends when authenticated as the restored Saefam mailbox", async () => {
     const lot = seedLot("Saefam lock tees", true);
     const buyerId = seedBuyer("saefamlock.com");
     const conversationId = convo(buyerId, "buy@saefamlock.com");
     setSetting("outbound_mode", "live");
-    mockGmail({ profile: async () => ({ emailAddress: PREVIOUS_SENDER }) });
+    const { sent } = mockGmail({ profile: async () => ({ emailAddress: PREVIOUS_SENDER }) });
     const result = await guardedOutreach({
       conversationId, buyerId, email: "buy@saefamlock.com", domain: "saefamlock.com",
       company: "Lock", lots: [lot], channel: "email", idempotencyKey: "saefam-ident-1",
     });
-    expect(result.status).toBe("failed");
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/not authorized|banned|From must be/);
+    expect(result.status).toBe("sent");
+    expect(sent).toHaveLength(1);
+    expect(sent[0].from).toBe(PREVIOUS_SENDER);
   });
 });
 
@@ -325,6 +328,40 @@ describe("2 Gmail inbox sync", () => {
     })).toMatchObject({ bounced: true, failedRecipient: "dead@dsnco.com" });
   });
 
+  it("does not treat a Gmail send-limit notice as a recipient bounce", async () => {
+    const buyerId = seedBuyer("limitco.com", "buy@limitco.com");
+    const conversationId = Number(
+      db().prepare("INSERT INTO conversations(buyer_id,state,channel,contact_email) VALUES(?,'queued','email','buy@limitco.com')")
+        .run(buyerId).lastInsertRowid,
+    );
+    db().prepare(
+      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key,provider_message_id)
+       VALUES(?,?,'email','[1]','','','[]','sent','provider accepted','limit-sent-1','gmail-limit-1')`,
+    ).run(conversationId, buyerId);
+    const notice = [
+      "You have reached a limit for sending mail. Your message was not sent.",
+      "",
+      "Saevitzon Overstock Wholesale opportunity Hi limitco.com team,",
+    ].join("\n");
+    expect(inboxBounceFlags({
+      text: notice,
+      from: "mailer-daemon@googlemail.com",
+      subject: "Message not sent",
+    })).toEqual({ bounced: false });
+    const result = await processInbound({
+      from: "mailer-daemon@googlemail.com",
+      text: notice,
+      providerMessageId: "g-send-limit",
+      bounced: true,
+    });
+    expect(result.classification).toBe("send_limit");
+    expect(isSuppressed("buy@limitco.com").suppressed).toBe(false);
+    const attempt = db().prepare("SELECT status, reason FROM outreach_attempts WHERE idempotency_key='limit-sent-1'").get() as { status: string; reason: string };
+    expect(attempt.status).toBe("failed");
+    expect(attempt.reason).toMatch(/send limit/);
+    expect(gmailSendCooldownUntil()).not.toBeNull();
+  });
+
   it("pulls the failed inbox out of an Exchange mailto bounce", () => {
     const text = [
       "Delivery has failed to these recipients or groups:",
@@ -370,15 +407,13 @@ describe("3 dry-run to live promotion", () => {
 
 describe("4 dry-run counters vs live caps", () => {
   it("does not let dry-runs consume daily or domain live capacity", async () => {
-    const lotA = seedLot("Cap tees A", true);
-    const lotB = seedLot("Cap tees B", true);
-    const lotC = seedLot("Cap tees C", true);
+    const lots = Array.from({ length: LIVE_DOMAIN_CAP + 1 }, (_, i) => seedLot(`Cap tees ${i}`, true));
     const buyerId = seedBuyer("capco.com");
     const conversationId = convo(buyerId, "buy@capco.com");
     for (let i = 0; i < 20; i++) {
       const r = await guardedOutreach({
         conversationId, buyerId, email: "buy@capco.com", domain: "capco.com",
-        company: "Cap", lots: [lotA], channel: "email", idempotencyKey: `dry-cap-${i}`,
+        company: "Cap", lots: [lots[0]], channel: "email", idempotencyKey: `dry-cap-${i}`,
       });
       expect(r.status).toBe("dry_run");
     }
@@ -386,24 +421,26 @@ describe("4 dry-run counters vs live caps", () => {
     const { sent } = mockGmail();
     const first = await guardedOutreach({
       conversationId, buyerId, email: "buy@capco.com", domain: "capco.com",
-      company: "Cap", lots: [lotA], channel: "email", idempotencyKey: "live-after-dry",
+      company: "Cap", lots: [lots[0]], channel: "email", idempotencyKey: "live-after-dry",
     });
     expect(first.status).toBe("sent");
     expect(sent).toHaveLength(1);
 
-    const second = await guardedOutreach({
-      conversationId, buyerId, email: "buy@capco.com", domain: "capco.com",
-      company: "Cap", lots: [lotB], channel: "email", idempotencyKey: "live-domain-2",
-    });
-    expect(second.status).toBe("sent");
+    for (let i = 1; i < LIVE_DOMAIN_CAP; i++) {
+      const next = await guardedOutreach({
+        conversationId, buyerId, email: "buy@capco.com", domain: "capco.com",
+        company: "Cap", lots: [lots[i]], channel: "email", idempotencyKey: `live-domain-${i + 1}`,
+      });
+      expect(next.status).toBe("sent");
+    }
 
-    const third = await guardedOutreach({
+    const over = await guardedOutreach({
       conversationId, buyerId, email: "buy@capco.com", domain: "capco.com",
-      company: "Cap", lots: [lotC], channel: "email", idempotencyKey: "live-domain-3",
+      company: "Cap", lots: [lots[LIVE_DOMAIN_CAP]], channel: "email", idempotencyKey: "live-domain-over",
     });
-    expect(third.status).toBe("deferred");
-    expect(third.reason).toMatch(/domain cap/);
-    const capRow = db().prepare("SELECT status FROM outreach_attempts WHERE idempotency_key='live-domain-3'").get() as { status: string };
+    expect(over.status).toBe("deferred");
+    expect(over.reason).toMatch(/domain cap/);
+    const capRow = db().prepare("SELECT status FROM outreach_attempts WHERE idempotency_key='live-domain-over'").get() as { status: string };
     expect(capRow.status).not.toBe("blocked");
   });
 });

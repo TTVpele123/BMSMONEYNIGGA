@@ -1,9 +1,10 @@
 import { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSentToday } from "./caps";
 import { db, killSwitchOn } from "./db";
-import { AUTHORIZED_SENDER, PREVIOUS_SENDER } from "./email/address";
-import { gmailConfigured, gmailSendCooldownUntil } from "./email/provider";
+import { PREVIOUS_SENDER } from "./email/address";
+import { activeSender, gmailConfigured, gmailSendCooldownUntil, senderPool } from "./email/provider";
 import { legacyTokensPresent, tokensPresent } from "./email/tokens";
 import { heartbeat } from "./orchestrator";
+import { countEligibleUntouchedBuyers, eligibleActiveLotIds } from "./outbound-stall";
 
 function parseDbUtc(ts: string): number {
   return Date.parse(ts.includes("T") ? ts : ts.replace(" ", "T") + "Z");
@@ -11,7 +12,7 @@ function parseDbUtc(ts: string): number {
 
 const CONFIRMED = `status='sent' AND provider_message_id IS NOT NULL AND trim(provider_message_id)!=''`;
 const TODAY = `created_at >= datetime('now','start of day')`;
-const REPLY = `classification NOT IN ('bounce','out_of_office')`;
+const REPLY = `classification NOT IN ('bounce','send_limit','out_of_office')`;
 
 const GROK_AGENTS = [
   { id: "WHATSAPP_SCANNER", role: "Oliver WhatsApp ingest + handoff send" },
@@ -35,7 +36,12 @@ function todayCounts() {
       WHERE agent='INBOUND_ANALYST' AND state='done'
         AND COALESCE(finished_at, created_at) >= datetime('now','start of day')`,
   );
-  const bounces = n(`SELECT COUNT(*) AS n FROM inbound_events WHERE classification='bounce' AND ${TODAY}`);
+  const bounces = n(
+    `SELECT COUNT(DISTINCT lower(from_address)) AS n FROM inbound_events
+      WHERE classification='bounce' AND ${TODAY}
+        AND from_address NOT LIKE '%mailer-daemon%'
+        AND from_address NOT LIKE '%postmaster@%'`,
+  );
   const warm = n(
     `SELECT COUNT(DISTINCT COALESCE(buyer_id, id)) AS n FROM inbound_events
       WHERE ${TODAY} AND (${REPLY}) AND (interest_level IN ('high','medium') OR classification='positive_interest')`,
@@ -232,7 +238,10 @@ function activity() {
             COALESCE(from_address, classification) AS label,
             classification AS extra,
             phone
-       FROM inbound_events ORDER BY id DESC LIMIT 20`,
+       FROM inbound_events
+      WHERE classification NOT IN ('send_limit')
+        AND NOT (classification='bounce' AND (from_address LIKE '%mailer-daemon%' OR from_address LIKE '%postmaster@%'))
+      ORDER BY id DESC LIMIT 20`,
   ).all() as ActivityRow[];
   const buyers = db().prepare(
     `SELECT created_at AS at, 'research' AS kind, company || ' · ' || domain AS label, NULL AS extra, NULL AS phone
@@ -257,32 +266,64 @@ function activity() {
 
 type ActivityRow = { at: string; kind: string; label: string; extra: string | null; phone: string | null };
 
+function leadNextAction(buyerId: number, phone: string | null): string {
+  if (phone) {
+    const handed = n(
+      `SELECT COUNT(*) AS n FROM escalations WHERE buyer_id=? AND state='handed_to_oliver' AND phone IS NOT NULL AND trim(phone)!=''`,
+      buyerId,
+    );
+    if (handed) return "Handed to Oliver — keep this deal warm";
+    const queued = n(
+      `SELECT COUNT(*) AS n FROM grok_jobs
+        WHERE agent='INBOUND_ANALYST' AND state IN ('queued','claimed')
+          AND (instruction LIKE '%' || ? || '%' OR input LIKE '%' || ? || '%')`,
+      phone,
+      phone,
+    );
+    if (queued) return "Oliver handoff queued — scanner must send";
+    return "Phone in hand — queue Oliver now";
+  }
+  return "Awaiting their phone — conversation is live";
+}
+
 function warmest() {
-  return db().prepare(
+  const rows = db().prepare(
     `SELECT b.id, b.company, b.domain, ie.phone, ie.interest_level, ie.classification, ie.created_at,
             (SELECT oa.lot_ids FROM outreach_attempts oa WHERE oa.buyer_id=b.id AND ${CONFIRMED} ORDER BY oa.id DESC LIMIT 1) AS lot_ids
        FROM inbound_events ie
        JOIN buyers b ON b.id=ie.buyer_id
-      WHERE ie.buyer_id IS NOT NULL
-        AND (
-          (ie.phone IS NOT NULL AND trim(ie.phone)!='')
-          OR ie.interest_level IN ('high','medium')
-          OR ie.classification='positive_interest'
-        )
-      ORDER BY CASE WHEN ie.phone IS NOT NULL AND trim(ie.phone)!='' THEN 0 ELSE 1 END,
+      WHERE ie.id IN (
+        SELECT MAX(ie2.id) FROM inbound_events ie2
+         WHERE ie2.buyer_id IS NOT NULL
+           AND ie2.classification NOT IN ('bounce','send_limit','out_of_office','unsubscribe','suspicious','not_interested')
+           AND (
+             (ie2.phone IS NOT NULL AND trim(ie2.phone)!='')
+             OR ie2.interest_level IN ('high','medium')
+             OR ie2.classification IN ('positive_interest','information_request','request_call','counterprice')
+           )
+         GROUP BY ie2.buyer_id
+      )
+      ORDER BY CASE WHEN date(ie.created_at)=date('now') THEN 0 ELSE 1 END,
+               CASE WHEN ie.phone IS NOT NULL AND trim(ie.phone)!='' THEN 0 ELSE 1 END,
                CASE ie.interest_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                ie.id DESC
-      LIMIT 8`,
+      LIMIT 3`,
   ).all() as Array<{
     id: number; company: string; domain: string; phone: string | null;
     interest_level: string; classification: string; created_at: string; lot_ids: string | null;
   }>;
+  return rows.map((w) => ({
+    ...w,
+    nextAction: leadNextAction(w.id, w.phone),
+  }));
 }
 
 export function dealDashboard() {
   const today = todayCounts();
   const beat = heartbeat();
   const cooldown = gmailSendCooldownUntil();
+  const senders = senderPool();
+  const currentSender = activeSender();
   const lastCycle = db().prepare(
     "SELECT at FROM audit_log WHERE actor='orchestrator' AND action='scheduler_cycle' ORDER BY id DESC LIMIT 1",
   ).get() as { at: string } | undefined;
@@ -305,15 +346,20 @@ export function dealDashboard() {
       WHERE b.disqualified_reason IS NULL
         AND NOT EXISTS (SELECT 1 FROM outreach_attempts oa WHERE oa.buyer_id=b.id AND ${CONFIRMED})`,
   );
+  const sendCapacity = countEligibleUntouchedBuyers(eligibleActiveLotIds());
   const nextTickAt = lastCycleAt
     ? new Date(parseDbUtc(lastCycleAt) + 300_000).toISOString()
     : null;
   const blockers: string[] = [];
   if (beat.kill) blockers.push("kill switch on");
   if (beat.mode !== "live") blockers.push(`outbound mode ${beat.mode}`);
-  if (!tokensPresent()) blockers.push("Gmail sender not connected");
-  if (!legacyTokensPresent()) blockers.push("Saefam read-only inbox not connected");
+  if (!senders.some((s) => s.send)) blockers.push("Gmail sender not connected");
+  if (!legacyTokensPresent()) blockers.push("Saefam inbox not connected");
   if (cooldown) blockers.push(`Gmail 429 cooldown until ${cooldown.toISOString()}`);
+  const saefam = senders.find((s) => s.address === PREVIOUS_SENDER);
+  if (saefam && saefam.connected && !saefam.send) {
+    blockers.push("Saefam recovered — reconnect with send to join the sender pool");
+  }
   if (minutesSinceSend != null && minutesSinceSend >= 15) blockers.push("no_confirmed_send_15m");
   if (today.oliverQueued) blockers.push(`${today.oliverQueued} Oliver handoff(s) queued — not delivered`);
 
@@ -329,15 +375,16 @@ export function dealDashboard() {
       engine: beat.mode,
       kill: beat.kill,
       listening: true,
-      sender: AUTHORIZED_SENDER,
-      senderConnected: tokensPresent(),
+      sender: currentSender,
+      senderConnected: senders.some((s) => s.send) || tokensPresent(),
       configuredForSend: gmailConfigured(),
+      senders,
       legacyInbox: PREVIOUS_SENDER,
       legacyConnected: legacyTokensPresent(),
       domainCap: LIVE_DOMAIN_CAP,
       dailyCap: LIVE_DAILY_CAP,
       rollingDaySends: liveSentToday(),
-      emailSendable: eligibleUntouched,
+      emailSendable: sendCapacity.email,
       eligibleUntouched,
       lastConfirmedSendAt: lastSend?.created_at ?? null,
       cooldownUntil: cooldown?.toISOString() ?? null,

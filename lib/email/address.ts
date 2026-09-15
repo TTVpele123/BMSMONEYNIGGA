@@ -1,10 +1,22 @@
-export const AUTHORIZED_SENDER = "saevitzonoverstock@gmail.com";
-export const PREVIOUS_SENDER = "saefamoverstock@gmail.com";
+export const AUTHORIZED_SENDERS = [
+  "saevitzonoverstock@gmail.com",
+  "saefamoverstock@gmail.com",
+] as const;
+
+export type AuthorizedSender = (typeof AUTHORIZED_SENDERS)[number];
+
+/** Default / published contact. Pool members are AUTHORIZED_SENDERS. */
+export const AUTHORIZED_SENDER: AuthorizedSender = AUTHORIZED_SENDERS[0];
+export const PREVIOUS_SENDER: AuthorizedSender = AUTHORIZED_SENDERS[1];
 export const DENIED_SENDER = "bailey@berkeley.edu";
 
-const OUR_MAILBOXES = new Set([AUTHORIZED_SENDER, PREVIOUS_SENDER]);
+const OUR_MAILBOXES = new Set<string>(AUTHORIZED_SENDERS);
 
 const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+
+export function isAuthorizedSender(address: string): address is AuthorizedSender {
+  return OUR_MAILBOXES.has(address.trim().toLowerCase());
+}
 
 export function isOurMailbox(address: string): boolean {
   return OUR_MAILBOXES.has(address.trim().toLowerCase());
@@ -54,6 +66,6 @@ export function parseFromHeader(raw: string): string {
 export function assertAuthorizedSender(address: string): { ok: true } | { ok: false; reason: string } {
   const v = address.trim().toLowerCase();
   if (isDeniedSender(v)) return { ok: false, reason: `${address} is banned from automation` };
-  if (v !== AUTHORIZED_SENDER) return { ok: false, reason: `From must be ${AUTHORIZED_SENDER}` };
+  if (!isAuthorizedSender(v)) return { ok: false, reason: `From must be an authorized business sender` };
   return { ok: true };
 }
