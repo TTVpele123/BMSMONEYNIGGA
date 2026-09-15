@@ -66,14 +66,24 @@ function goodsLabel(lots: LotRef[]): string {
   return titles.join(" / ") || "lot on conversation";
 }
 
+/** Prefer the lot that matches the goods label so a drill handoff never attaches drone/hoodie photos. */
+function relevantLotsForPhotos(lots: LotRef[]): LotRef[] {
+  const drills = lots.filter((l) => /drill/i.test(l.title));
+  if (drills.length) return drills;
+  const hoodies = lots.filter((l) => /hoodie/i.test(l.title));
+  if (hoodies.length) return hoodies;
+  return lots;
+}
+
+/** Original certain Oliver lot photos only. Chat screenshots are already excluded by listSendableMediaFiles. */
 export function photosForLots(lotIds: number[]): Array<{ path: string; filename: string; lotId: number }> {
-  const lots = marketableLots(lotIds);
-  if (lots.some((l) => /drill/i.test(l.title)) && !lots.some((l) => /hoodie/i.test(l.title))) return [];
+  const lots = relevantLotsForPhotos(marketableLots(lotIds));
   const out: Array<{ path: string; filename: string; lotId: number }> = [];
-  for (const id of lotIds) {
-    const first = listSendableMediaFiles(id)[0];
-    if (first) out.push({ path: first.path, filename: first.filename, lotId: id });
-    if (out.length >= 3) break;
+  for (const lot of lots) {
+    for (const file of listSendableMediaFiles(lot.id)) {
+      out.push({ path: file.path, filename: file.filename, lotId: lot.id });
+      if (out.length >= 4) return out;
+    }
   }
   return out;
 }

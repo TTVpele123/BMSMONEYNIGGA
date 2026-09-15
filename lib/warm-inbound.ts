@@ -123,20 +123,31 @@ export function shouldSendWarmReply(analysis: ReplyAnalysisT, raw: string): bool
 
 export function queueOliverHandoff(input: { escalationId: number; packet: string; phone: string }): number {
   const key = `oliver_handoff:${input.escalationId}`;
+  const esc = db().prepare("SELECT id, state, lot_ids FROM escalations WHERE id=?").get(input.escalationId) as
+    | { id: number; state: string; lot_ids: string }
+    | undefined;
+  if (!esc) return 0;
   const existing = db().prepare(
-    "SELECT id FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ?"
-  ).get(`%${key}%`) as { id: number } | undefined;
-  if (existing) return existing.id;
+    "SELECT id, state FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ? ORDER BY id DESC LIMIT 1"
+  ).get(`%${key}%`) as { id: number; state: string } | undefined;
+  // One-shot: already handed or already successfully sent — never queue a second Oliver message.
+  if (esc.state === "handed_to_oliver" || existing?.state === "done") return existing?.id ?? 0;
   const lotIds = (() => {
-    const row = db().prepare("SELECT lot_ids FROM escalations WHERE id=?").get(input.escalationId) as { lot_ids: string } | undefined;
-    try { return row ? JSON.parse(row.lot_ids) as number[] : []; } catch { return []; }
+    try { return JSON.parse(esc.lot_ids) as number[]; } catch { return []; }
   })();
+  const payload = { ...input, photos: photosForLots(lotIds) };
+  if (existing) {
+    db().prepare(
+      "UPDATE grok_jobs SET input=?, state='queued', claimed_at=NULL, result=NULL, finished_at=NULL WHERE id=? AND state IN ('queued','claimed','failed')"
+    ).run(JSON.stringify(payload), existing.id);
+    return existing.id;
+  }
   const jobId = enqueueGrokJob(
     "INBOUND_ANALYST",
     `Send this to Oliver on WhatsApp as one message: name, phone, and product only. Attach the listed original lot photos if present. Do not add facts. Do not message anyone else. ${key}`,
-    { ...input, photos: photosForLots(lotIds) },
+    payload,
   );
-  const esc = db().prepare(
+  const contact = db().prepare(
     `SELECT o.selected_handle AS handle, c.contact_email AS email
        FROM escalations e
        LEFT JOIN opportunities o ON o.buyer_id=e.buyer_id
@@ -144,7 +155,7 @@ export function queueOliverHandoff(input: { escalationId: number; packet: string
       WHERE e.id=?
       ORDER BY o.id DESC LIMIT 1`
   ).get(input.escalationId) as { handle: string | null; email: string | null } | undefined;
-  const target = esc?.handle || esc?.email;
+  const target = contact?.handle || contact?.email;
   if (target) recordQualityOutcome(target, "oliver_handoff", { source: sourceForEmail(target) });
   return jobId;
 }

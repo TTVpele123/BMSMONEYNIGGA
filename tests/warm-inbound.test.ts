@@ -1,10 +1,15 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { classifyReply, extractPhone, looksLikeAutoAck } from "../lib/classify";
 import { db } from "../lib/db";
-import { createEscalation, refreshOpenHandoffLots } from "../lib/escalate";
+import { createEscalation, photosForLots, refreshOpenHandoffLots } from "../lib/escalate";
 import { continueMissedPhoneHandoffs, continueWarmInbound, processInbound } from "../lib/inbound";
 import { enrollBuyer } from "../lib/research";
-import { applyOliverHandoffResult, answerFromVerified, composeWarmReply } from "../lib/warm-inbound";
+import { applyOliverHandoffResult, answerFromVerified, composeWarmReply, queueOliverHandoff } from "../lib/warm-inbound";
+import { writeTestPng } from "./png";
 
 function seedBuyer(domain: string, email = `buy@${domain}`) {
   const { buyerId } = enrollBuyer({
@@ -314,6 +319,48 @@ describe("warm inbound", () => {
     expect(job.input).toContain("drill");
     expect(job.input).toContain("\"photos\":[]");
     expect(job.input).not.toContain(`(${bailey.id})`);
+  });
+
+  it("attaches certain original drill photos and does not re-queue a handed escalation", () => {
+    const buyerId = seedBuyer("darrenphotos.com");
+    db().prepare("INSERT INTO lots(external_key,title,category,state,availability,project_gate) VALUES('esc-drill-photo','Lithium-Ion Drill Tool Set','tools-hardware','outreach_active','active','AMBER')").run();
+    db().prepare("INSERT INTO lots(external_key,title,category,state,availability,project_gate) VALUES('esc-drone-photo','Foldable remote-control drone','electronics','outreach_active','active','AMBER')").run();
+    const drill = db().prepare("SELECT id FROM lots WHERE external_key='esc-drill-photo'").get() as { id: number };
+    const drone = db().prepare("SELECT id FROM lots WHERE external_key='esc-drone-photo'").get() as { id: number };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bmsm-oliver-"));
+    const photo = path.join(dir, `lot-${drill.id}.png`);
+    writeTestPng(photo, 420, 240);
+    const sha = crypto.createHash("sha256").update(fs.readFileSync(photo)).digest("hex");
+    db().prepare(
+      `INSERT INTO lot_media(lot_id,oliver_message_id,sha256,path,filename,mime,classification,outreach_safe,association_certain)
+       VALUES(?,?,?,?,?,'image/png','warehouse_inventory_photo',1,1)`
+    ).run(drill.id, `wa-drill-${sha.slice(0, 8)}`, sha, photo, path.basename(photo));
+
+    const attached = photosForLots([drill.id, drone.id]);
+    expect(attached.map((p) => p.lotId)).toEqual([drill.id]);
+    expect(attached[0]?.filename).toBe(path.basename(photo));
+
+    const convo = db().prepare("INSERT INTO conversations(buyer_id,state,channel) VALUES(?,'escalated','email')").run(buyerId);
+    const text = "This is my mobile.\n647-964-0050";
+    const escalationId = createEscalation({
+      buyerId,
+      conversationId: Number(convo.lastInsertRowid),
+      reason: "phone captured",
+      phone: "647-964-0050",
+      analysis: classifyReply(text),
+      question: text,
+    });
+    db().prepare("UPDATE escalations SET lot_ids=? WHERE id=?").run(JSON.stringify([drill.id, drone.id]), escalationId);
+    const first = queueOliverHandoff({ escalationId, packet: "Darren AV Dulisse\n647-964-0050\ndrill", phone: "647-964-0050" });
+    const again = queueOliverHandoff({ escalationId, packet: "Darren AV Dulisse\n647-964-0050\ndrill", phone: "647-964-0050" });
+    expect(again).toBe(first);
+    const payload = JSON.parse((db().prepare("SELECT input FROM grok_jobs WHERE id=?").get(first) as { input: string }).input) as { photos: Array<{ lotId: number }> };
+    expect(payload.photos.map((p) => p.lotId)).toEqual([drill.id]);
+
+    db().prepare("UPDATE escalations SET state='handed_to_oliver' WHERE id=?").run(escalationId);
+    db().prepare("UPDATE grok_jobs SET state='done' WHERE id=?").run(first);
+    expect(queueOliverHandoff({ escalationId, packet: "Darren AV Dulisse\n647-964-0050\ndrill", phone: "647-964-0050" })).toBe(first);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE instruction LIKE ?").get(`%oliver_handoff:${escalationId}%`) as { n: number }).n).toBe(1);
   });
 
   it("does not hand a pass + signature phone to Oliver", async () => {

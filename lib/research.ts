@@ -452,7 +452,7 @@ export function claimGrokJobs(agent?: string, limit?: number): { id: number; age
   if (!agent) return [];
   if (agent === "FORM_OPERATOR") expireTouchedFormJobs();
   const take = grokClaimLimit(agent, limit);
-  if (agent === "FORM_OPERATOR") {
+  if (agent === "FORM_OPERATOR" || agent === "INBOUND_ANALYST") {
     const open = db().prepare(
       "SELECT id, agent, instruction, input FROM grok_jobs WHERE state='claimed' AND agent=? ORDER BY id LIMIT ?"
     ).all(agent, take) as { id: number; agent: string; instruction: string; input: string }[];

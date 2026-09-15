@@ -11,7 +11,7 @@ Hard rules:
 - Never fabricate product or buyer facts.
 - Never bypass kill switch, suppression, or guardedOutreach.
 - Never mark a failed send as success.
-- Do not message Oliver automatically.
+- Do not message Oliver except a verified phone-number handoff: name + verified phone + relevant product + original certain lot photos, once. No other Oliver outbound.
 - Authorized mailbox: saevitzonoverstock@gmail.com
 - Default outbound mode is dry_run.
 - Humans only for hot deals, negotiation, money/legal, or genuine ambiguity.
