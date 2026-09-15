@@ -30,7 +30,13 @@ export function extractFailedRecipient(text: string, headerOrFrom?: string): str
   return null;
 }
 
+export function looksLikeSenderLimit(text: string, from?: string, subject?: string): boolean {
+  const t = `${from ?? ""} ${subject ?? ""} ${text ?? ""}`.toLowerCase();
+  return /reached a limit for sending mail|your message was not sent|sending limit|daily sending limit/.test(t);
+}
+
 export function looksLikeHardBounce(text: string, from?: string, subject?: string): boolean {
+  if (looksLikeSenderLimit(text, from, subject)) return false;
   const t = `${from ?? ""} ${subject ?? ""} ${text ?? ""}`.toLowerCase();
   return /mailer-daemon|postmaster@/.test(t)
     || /delivery status notification|undeliverable|delivery (failure|failed)|returned to sender/.test(t)
@@ -49,6 +55,9 @@ export function inboxBounceFlags(input: {
   failedHeader?: string;
 }): { bounced: boolean; failedRecipient?: string } {
   const header = (input.failedHeader ?? "").trim();
+  if (looksLikeSenderLimit(input.text, input.from, input.subject)) {
+    return { bounced: false };
+  }
   const fromHeader = header ? extractFailedRecipient("", header) : null;
   if (!fromHeader && !looksLikeHardBounce(input.text, input.from, input.subject)) {
     return { bounced: false };

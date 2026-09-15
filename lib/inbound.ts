@@ -124,7 +124,7 @@ export async function processInbound(input: {
     recordQualityOutcome(from, "phone_captured", { source: sourceForEmail(from) });
   }
 
-  if (buyer && !["bounce", "out_of_office"].includes(analysis.classification)) {
+  if (buyer && !["bounce", "out_of_office", "send_limit"].includes(analysis.classification)) {
     recordQualityOutcome(from, "replied", { source: sourceForEmail(from) });
     markReplied(from, buyer.id);
     db().prepare("UPDATE conversations SET state='replied', last_inbound_at=datetime('now'), updated_at=datetime('now') WHERE buyer_id=?").run(buyer.id);

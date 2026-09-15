@@ -86,10 +86,10 @@ describe("suppression", () => {
 });
 
 describe("inbound", () => {
-  it("extracts phone and escalates hot replies", () => {
+  it("extracts phone and escalates hot replies", async () => {
     expect(extractPhone("call me at 818-406-8612")).toContain("818");
     const buyerId = seedBuyer("hotbuyer.com");
-    const r = processInbound({
+    const r = await processInbound({
       from: "buy@hotbuyer.com",
       text: "Yes we are interested. Call me at 312-555-0199. Can we hop on a call this week?",
       providerMessageId: "m1",
@@ -100,9 +100,9 @@ describe("inbound", () => {
     expect(esc.phone).toContain("312");
   });
 
-  it("unsubscribe is none and suppresses", () => {
+  it("unsubscribe is none and suppresses", async () => {
     seedBuyer("stop.com");
-    const r = processInbound({ from: "buy@stop.com", text: "Please stop emailing us." });
+    const r = await processInbound({ from: "buy@stop.com", text: "Please stop emailing us." });
     expect(r.classification).toBe("unsubscribe");
     expect(isSuppressed("other@stop.com").suppressed).toBe(true);
     expect(classifyReply("Please stop.").classification).toBe("unsubscribe");
@@ -153,7 +153,7 @@ describe("end-to-end dry run", () => {
     const orch = await tick();
     expect(orch.failed).toBe(0);
 
-    const inbound = processInbound({
+    const inbound = await processInbound({
       from: "buy@fitco.com",
       text: "Interested in 5000 units. My cell is 415-555-0100.",
       providerMessageId: "reply-1",

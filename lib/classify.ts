@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { looksLikeSenderLimit } from "./email/bounce";
 
 export const CLASSIFICATIONS = [
   "positive_interest", "information_request", "request_call", "counterprice",
   "not_interested", "wrong_contact", "referral_to_colleague", "out_of_office",
-  "bounce", "unsubscribe", "suspicious", "unknown", "request_photos",
+  "bounce", "unsubscribe", "suspicious", "unknown", "send_limit", "request_photos",
   "request_manifest", "pallet_only", "insufficient_capacity",
 ] as const;
 export type Classification = (typeof CLASSIFICATIONS)[number];
@@ -54,6 +55,11 @@ export function classifyReply(raw: string, meta?: { bounced?: boolean; autoReply
     base.confidence = conf;
   };
 
+  if (looksLikeSenderLimit(text)) {
+    set("send_limit", 0.99);
+    base.interestLevel = "none";
+    return ReplyAnalysis.parse(base);
+  }
   if (meta?.bounced || /delivery (status notification|failed)|address not found|550 /.test(t)) {
     set("bounce", 0.95);
     base.interestLevel = "none";

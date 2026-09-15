@@ -4,7 +4,7 @@
  * Generic inboxes stay sendable so volume holds; better evidence replaces them later.
  */
 import { audit, db } from "./db";
-import { parseRecipient } from "./email/address";
+import { extractBuyerEmail, parseRecipient } from "./email/address";
 
 export const CONTACT_QUALITIES = ["named_buyer", "purchasing", "sales_buying", "generic"] as const;
 export type ContactQuality = (typeof CONTACT_QUALITIES)[number];
@@ -160,8 +160,9 @@ export function listBuyerEmails(buyerId: number): RankedEmail[] {
   const out: RankedEmail[] = [];
   const add = (email: string, source: string | null, name: string | null, title: string | null) => {
     const parsed = parseRecipient(email);
-    if (!parsed.ok) return;
-    const key = parsed.email;
+    const extracted = parsed.ok ? parsed : extractBuyerEmail(email);
+    if (!extracted.ok) return;
+    const key = extracted.email;
     if (seen.has(key)) return;
     seen.add(key);
     const ranked = rankEmailScore(key, { source, name, title });

@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { parseRecipient } from "../email/address";
+import { extractBuyerEmail, parseRecipient } from "../email/address";
 import { isSuppressed } from "../suppression";
 import { rankEmailScore } from "../targeting";
 import type { ChannelEndpoint, ChannelId } from "./types";
@@ -73,10 +73,11 @@ export function listEndpoints(buyerId: number): ChannelEndpoint[] {
     const verified = /verified|public_intake|clay/i.test(c.verification ?? "");
     if (c.email) {
       const parsed = parseRecipient(c.email);
-      if (parsed.ok) {
+      const extracted = parsed.ok ? parsed : extractBuyerEmail(c.email);
+      if (extracted.ok) {
         add({
           channel: "email",
-          handle: parsed.email,
+          handle: extracted.email,
           confidence: verified ? 0.95 : 0.6,
           verified,
           source: "buyer_contacts",

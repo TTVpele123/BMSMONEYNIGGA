@@ -228,7 +228,7 @@ describe("operational readiness #1 dry-run sales loop", () => {
     const suppressedAttempt = db().prepare("SELECT id FROM outreach_attempts WHERE buyer_id=?").get(otherId);
     expect(suppressedAttempt).toBeUndefined();
 
-    const inbound = processInbound({
+    const inbound = await processInbound({
       from: "buying@merchandiseusa.com",
       text: "Interested in the hoodies. Call 312-555-0148 for 4000 units.",
       providerMessageId: "ops-loop-reply-1",
