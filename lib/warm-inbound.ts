@@ -137,8 +137,9 @@ export function queueOliverHandoff(input: { escalationId: number; packet: string
   })();
   const payload = { ...input, photos: photosForLots(lotIds) };
   if (existing) {
+    if (existing.state === "claimed") return existing.id;
     db().prepare(
-      "UPDATE grok_jobs SET input=?, state='queued', claimed_at=NULL, result=NULL, finished_at=NULL WHERE id=? AND state IN ('queued','claimed','failed')"
+      "UPDATE grok_jobs SET input=?, state='queued', claimed_at=NULL, result=NULL, finished_at=NULL WHERE id=? AND state IN ('queued','failed')"
     ).run(JSON.stringify(payload), existing.id);
     return existing.id;
   }
