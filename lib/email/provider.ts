@@ -273,15 +273,27 @@ const liveClient: GmailClient = {
   },
 };
 
+function asHistoryId(value: string | number | null | undefined): string | null {
+  if (value == null || value === "") return null;
+  return String(value);
+}
+
+async function profileHistoryId(fetchFn: GmailFetch): Promise<string | null> {
+  const r = await fetchFn("profile");
+  if (!r.ok) return null;
+  const j = await r.json() as { historyId?: string | number };
+  return asHistoryId(j.historyId);
+}
+
 async function listInboxWith(fetchFn: GmailFetch, historyId: string | null): Promise<GmailInboxPage> {
   const q = historyId
     ? `history?startHistoryId=${historyId}&historyTypes=messageAdded`
-    : "messages?maxResults=25&q=" + encodeURIComponent("in:inbox newer_than:2d");
+    : "messages?maxResults=50&q=" + encodeURIComponent("in:inbox newer_than:2d -from:mailer-daemon -from:postmaster");
   const r = await fetchFn(q);
   if (r.status === 404 && historyId) return listInboxWith(fetchFn, null);
   if (!r.ok) throw new Error(`gmail list ${r.status}`);
   const j = await r.json() as {
-    historyId?: string;
+    historyId?: string | number;
     history?: { messagesAdded?: { message: { id: string } }[] }[];
     messages?: { id: string }[];
   };
@@ -289,11 +301,12 @@ async function listInboxWith(fetchFn: GmailFetch, historyId: string | null): Pro
     ? (j.history ?? []).flatMap((h) => (h.messagesAdded ?? []).map((m) => m.message.id))
     : (j.messages ?? []).map((m) => m.id);
   const messages: GmailInboxMessage[] = [];
-  for (const id of ids.slice(0, 40)) {
+  for (const id of ids.slice(0, 50)) {
     const parsed = await readGmailMessage(id, fetchFn);
     if (parsed) messages.push(parsed);
   }
-  return { messages, historyId: j.historyId ?? historyId };
+  const listed = asHistoryId(j.historyId) ?? historyId;
+  return { messages, historyId: listed ?? await profileHistoryId(fetchFn) };
 }
 
 async function readGmailMessage(id: string, fetchFn: GmailFetch = gmailFetch): Promise<GmailInboxMessage | null> {

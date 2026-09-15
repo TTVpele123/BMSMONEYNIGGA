@@ -331,7 +331,7 @@ export async function continueUnansweredWarmInbounds(limit = 200): Promise<numbe
   let n = 0;
   for (const row of rows) {
     const done = db().prepare("SELECT id, status, reason FROM outreach_attempts WHERE idempotency_key=?").get(`warm-reply:${row.id}`) as { id: number; status: string; reason: string } | undefined;
-    if (done?.status === "failed" && /429|rate limit|domain cap/i.test(done.reason ?? "")) {
+    if (done?.status === "failed" && /429|rate limit|domain cap|send limit|message not sent/i.test(done.reason ?? "")) {
       db().prepare("DELETE FROM outreach_attempts WHERE id=?").run(done.id);
     } else if (done) {
       continue;

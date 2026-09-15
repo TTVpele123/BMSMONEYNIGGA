@@ -53,8 +53,8 @@ export async function syncGmailInbox(): Promise<{ ok: boolean; ingested: number;
     if (await ingestMessage(m, mailboxOf.get(m.providerMessageId) ?? AUTHORIZED_SENDER)) ingested += 1;
   }
   repairSenderLimitNotices();
-  if (historyId) setSetting("gmail_history_id", historyId);
-  if (legacy.historyId) setSetting("gmail_legacy_history_id", legacy.historyId);
+  if (historyId) setSetting("gmail_history_id", String(historyId));
+  if (legacy.historyId) setSetting("gmail_legacy_history_id", String(legacy.historyId));
   audit("gmail", "inbox_synced", {
     detail: { ingested, historyId, legacyHistoryId: legacy.historyId, bounceBackfill: extra },
   });
