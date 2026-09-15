@@ -349,6 +349,10 @@ describe("channel router", () => {
   it("never treats a form click as confirmed without confirmation evidence", () => {
     expect(interpretFormResult({ submitted: true }).state).toBe("failed");
     expect(interpretFormResult({ submitted: true, confirmationText: "Thanks, we received your request. Ticket #88" }).state).toBe("confirmed");
+    expect(interpretFormResult({ submitted: true, confirmationText: "Message Sent! We’ll get back to you soon." }).state).toBe("confirmed");
+    expect(interpretFormResult({ submitted: true, confirmationText: "Successfully submitted!" }).state).toBe("confirmed");
+    expect(interpretFormResult({ submitted: true, confirmationText: "Dziękujemy. Twoja wiadomość została wysłana." }).state).toBe("confirmed");
+    expect(interpretFormResult({ submitted: true, confirmationText: "Thanks! We'll review your inquiry and get back to you within 1-2 business days." }).state).toBe("confirmed");
     expect(interpretFormResult({ submitted: false }).state).toBe("deferred");
   });
 

@@ -16,9 +16,10 @@ Drain the form queue one job at a time. Open the exact URL. Fill only facts in t
 - `input` is a JSON object (`url`, `live`, `submit`, `identity`, `message`, `lots`, `media`)
 - Browser: that form URL only
 - No Gmail send. No WhatsApp. No Instagram/LinkedIn. Forms do not use Gmail caps
-- Never invent qty, price, brand, EIN, resale cert, or licenses
+- Never invent qty, price, brand, EIN, resale cert, licenses, location, or monthly-returns volume
 - Never bypass CAPTCHA, login, MFA, Cloudflare, or rate limits
-- If a required field is not in the job, do not guess — `needs_human`
+- If a required field is not in the job, do not guess — skip and POST `needs_human`
+- Location / Monthly returns (or Monthly returns value): required + missing → skip. Optional → leave blank and submit. Never invent DTLA, a city, or a volume number
 - Attach original Oliver photos from `media[].path` only if the form has a file input
 - One form per claimed job. POST the result before claiming the next
 - After POST, claim again. Stop only when the queue is empty

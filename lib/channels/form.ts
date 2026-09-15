@@ -1,6 +1,6 @@
 const GATED_RE = /login|signin|sign-in|sign_in|auth|captcha|recaptcha|cloudflare|mfa|2fa|account\/create|register/i;
 const PORTAL_RE = /vendor[-_ ]?portal|supplier[-_ ]?portal|sellercentral|partner[-_ ]?net|retail[-_ ]?link/i;
-const CONFIRM_RE = /thank you|thanks for|we (have )?received|submission (received|complete)|ticket\s*#?\s*\w+|reference\s*(id|#)/i;
+const CONFIRM_RE = /thank you|thanks[!.,]|thanks for|we (have )?received|we.ll review your|submission (received|complete)|successfully (sent|submitted)|(?:message|form) (?:has been |was )?sent|ticket\s*#?\s*\w+|reference\s*(id|#)|dziękujemy|wiadomość została wysłana|bedankt voor|het is verzonden|inzending is gelukt/i;
 
 export type FormClass = "public" | "gated" | "portal";
 
