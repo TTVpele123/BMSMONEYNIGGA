@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Overnight clock: keep :3222 up, then POST the same scheduler cycle the UI uses.
+# This is the only clock. It already runs research, rematch, send, inbox, phone
+# capture, and Oliver queue — do not add a second subsystem.
 # launchd PATH is tiny — do not assume nvm is loaded.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

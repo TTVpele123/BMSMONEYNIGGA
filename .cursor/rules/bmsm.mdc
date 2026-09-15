@@ -5,15 +5,22 @@ alwaysApply: true
 
 You are working in BMSMONEYNIGGA, an autonomous deal engine. Oliver WhatsApp is the inventory source of truth.
 
-Hard rules:
-- Never send WhatsApp chat screenshots as buyer media.
-- Only original Oliver lot photos with certain lot association.
-- Never fabricate product or buyer facts.
+Bailey operating standard (permanent — do not add a parallel system):
+
+1. Replenish first-touch with evidenced named buyers / purchasing / merchandising. Never reduce sends because a better contact is missing; generics stay fallback.
+2. FORM_OPERATOR claims and actually submits public forms. A click/open is not submitted. No CAPTCHA bypass. Required Location / Monthly returns missing → skip. Optional → leave blank. Never invent success, DTLA, or a volume.
+3. Keep researching upgrades for info@ / sales@ via BUYER_RESEARCHER / OPPORTUNITY_RESEARCHER and targeting rank.
+4. Funnel contacted → reply → phone. Process genuine replies immediately. Use an existing mobile/direct first; else the short phone ask.
+5. New Oliver inventory automatically creates fresh buyer pools and new one-touch via the existing WhatsApp ingest / match path.
+6. Both authorized Gmail senders rotate on real provider limits only. Do not weaken kill switch, dedupe, entity cooldowns, domain cap, bounce suppression, guardedOutreach, or cross-sender duplicate protection.
+7. WHATSAPP_SCANNER messages Oliver only for a verified phone handoff: name + phone + product + original certain lot photos, once. No Bailey confirmation. No other Oliver outbound.
+8. Never invent phones or buyer facts. Never send WhatsApp chat screenshots as buyer media. Only original Oliver lot photos with certain lot association.
+
+Also:
 - Never bypass kill switch, suppression, or guardedOutreach.
 - Never mark a failed send as success.
-- Do not message Oliver except a verified phone-number handoff: name + verified phone + relevant product + original certain lot photos, once. No other Oliver outbound.
-- Authorized mailbox: saevitzonoverstock@gmail.com
-- Default outbound mode is dry_run.
+- Authorized mailboxes: saevitzonoverstock@gmail.com and saefamoverstock@gmail.com.
+- Default outbound mode is dry_run (live is settings-first on :3222).
 - Humans only for hot deals, negotiation, money/legal, or genuine ambiguity.
 
 Grok Bot: WhatsApp Web / forms / social UI only. Code owns orchestration.

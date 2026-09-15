@@ -1,5 +1,5 @@
 import { audit, db } from "./db";
-import { buyerAuthoredReply, classifyReply, isHotLead, looksLikeAutoAck, type ReplyAnalysisT } from "./classify";
+import { buyerAuthoredReply, classifyReply, isHotLead, looksLikeAutoAck, usableDirectPhone, type ReplyAnalysisT } from "./classify";
 import { extractFailedRecipient, looksLikeHardBounce, looksLikeSenderLimit } from "./email/bounce";
 import { isOurMailbox, parseFromHeader } from "./email/address";
 import { noteGmailSenderLimit } from "./email/provider";
@@ -11,6 +11,28 @@ import { recordContact } from "./research";
 import { writeBounce, writeUnsubscribe } from "./suppression";
 import { recordQualityOutcome, sourceForEmail } from "./targeting";
 import { queueOliverHandoff, sendWarmReply, shouldSendWarmReply } from "./warm-inbound";
+
+/** Prefer an already-stored mobile/direct before asking again. Never invent a number. */
+export function existingDirectPhone(buyerId: number): string | null {
+  const rows = db().prepare(
+    `SELECT phone FROM buyer_contacts
+      WHERE buyer_id=? AND phone IS NOT NULL AND trim(phone)!=''
+      ORDER BY CASE verification WHEN 'inbound' THEN 0 ELSE 1 END, id DESC`
+  ).all(buyerId) as Array<{ phone: string }>;
+  for (const row of rows) {
+    const ok = usableDirectPhone(row.phone);
+    if (ok) return ok;
+  }
+  return null;
+}
+
+function applyExistingDirectPhone(analysis: ReplyAnalysisT, buyerId: number | undefined, raw: string): void {
+  if (!buyerId || analysis.phone) return;
+  if (["bounce", "send_limit", "out_of_office", "unsubscribe", "suspicious", "not_interested"].includes(analysis.classification)) return;
+  if (looksLikeAutoAck(raw) && !/\?/.test(buyerAuthoredReply(raw))) return;
+  const existing = existingDirectPhone(buyerId);
+  if (existing) analysis.phone = existing;
+}
 
 function findBuyerForAddress(email: string): { id: number; conversation_id: number | null } | undefined {
   const lookup = parseFromHeader(email);
@@ -93,6 +115,7 @@ export async function processInbound(input: {
     : null;
   const lookup = bounceHint ?? from;
   const buyer = findBuyerForInbound(lookup, input.text);
+  applyExistingDirectPhone(analysis, buyer?.id, input.text);
 
   const info = db().prepare(
     `INSERT INTO inbound_events(conversation_id,buyer_id,from_address,provider_message_id,classification,interest_level,phone,quantity,price,raw_text)
@@ -294,6 +317,7 @@ export function continueMissedPhoneHandoffs(limit = 500): number {
       ? { id: row.buyer_id, conversation_id: row.conversation_id }
       : findBuyerForInbound(row.from_address, raw);
     if (!buyer) continue;
+    applyExistingDirectPhone(analysis, buyer.id, raw);
     if (row.classification === "bounce") {
       if (!analysis.phone || !isHotLead(analysis)) continue;
       liftFalseBounceSuppress(row.from_address);

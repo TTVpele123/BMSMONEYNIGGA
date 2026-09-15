@@ -168,9 +168,17 @@ function isTollFree(phone: string): boolean {
   return /^1?8(00|88|77|66|55)/.test(d);
 }
 
+/** Stored mobile/direct only — never our line, never toll-free, never invented. */
+export function usableDirectPhone(phone: string | null | undefined): string | null {
+  if (!phone || !String(phone).trim()) return null;
+  const clean = String(phone).replace(/\s+/g, " ").trim();
+  if (OUR_LINE.test(clean) || isTollFree(clean)) return null;
+  return clean;
+}
+
 /** Oliver handoff only after a real buyer phone — never bounce/OOO/ack/pass/toll-free. */
 export function isHotLead(a: ReplyAnalysisT): boolean {
   if (["bounce", "send_limit", "out_of_office", "unsubscribe", "suspicious", "not_interested"].includes(a.classification)) return false;
-  if (!a.phone || isTollFree(a.phone)) return false;
+  if (!usableDirectPhone(a.phone)) return false;
   return true;
 }

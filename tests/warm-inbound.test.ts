@@ -397,6 +397,20 @@ describe("warm inbound", () => {
     expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE '%oliver_handoff:%'").get() as { n: number }).n).toBeGreaterThanOrEqual(1);
   });
 
+  it("uses a stored mobile before asking for a phone", async () => {
+    const buyerId = seedBuyer("storeddirect.com");
+    db().prepare("UPDATE buyer_contacts SET phone='415-555-0188', verification='inbound' WHERE buyer_id=?").run(buyerId);
+    const r = await processInbound({
+      from: "buy@storeddirect.com",
+      text: "Thanks — send the hoodie details when you can.",
+      providerMessageId: "stored-direct-1",
+    });
+    expect(r.escalated).toBe(true);
+    const inbound = db().prepare("SELECT phone FROM inbound_events WHERE provider_message_id='stored-direct-1'").get() as { phone: string };
+    expect(inbound.phone).toContain("415-555-0188");
+    expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE '%oliver_handoff:%'").get() as { n: number }).n).toBeGreaterThanOrEqual(1);
+  });
+
   it("does not hand bounce DSNs to Oliver", async () => {
     const buyerId = seedBuyer("dsnco.com");
     const r = await processInbound({
