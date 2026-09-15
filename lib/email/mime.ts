@@ -1,4 +1,4 @@
-import { AUTHORIZED_SENDER } from "./address";
+import { assertAuthorizedSender } from "./address";
 
 export type MimeAttachment = {
   filename: string;
@@ -21,15 +21,20 @@ export function buildRawMessage(input: {
   to: string;
   subject: string;
   body: string;
+  html?: string;
   attachments?: MimeAttachment[];
 }): string {
   const from = input.from.trim().toLowerCase();
-  if (from !== AUTHORIZED_SENDER) throw new Error(`From must be ${AUTHORIZED_SENDER}`);
+  const allowed = assertAuthorizedSender(from);
+  if (!allowed.ok) throw new Error(allowed.reason);
   const attachments = input.attachments ?? [];
   const mix = `bmsm-mix-${Date.now().toString(36)}`;
   const rel = `bmsm-rel-${Date.now().toString(36)}`;
-  const lines = [
-    `From: ${AUTHORIZED_SENDER}`,
+  const alt = `bmsm-alt-${Date.now().toString(36)}`;
+  const html = input.html?.trim();
+
+  const lines: string[] = [
+    `From: Bailey Saevitzon <${from}>`,
     `To: ${input.to}`,
     `Subject: ${encodedSubject(input.subject)}`,
     "MIME-Version: 1.0",
@@ -39,11 +44,26 @@ export function buildRawMessage(input: {
     `Content-Type: multipart/related; boundary="${rel}"`,
     "",
     `--${rel}`,
+    `Content-Type: multipart/alternative; boundary="${alt}"`,
+    "",
+    `--${alt}`,
     "Content-Type: text/plain; charset=utf-8",
     "Content-Transfer-Encoding: base64",
     "",
     b64lines(Buffer.from(input.body, "utf8").toString("base64")),
   ];
+
+  if (html) {
+    lines.push(
+      `--${alt}`,
+      "Content-Type: text/html; charset=utf-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      b64lines(Buffer.from(html, "utf8").toString("base64")),
+    );
+  }
+  lines.push(`--${alt}--`);
+
   for (const a of attachments) {
     lines.push(
       `--${rel}`,
