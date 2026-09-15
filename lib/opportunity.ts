@@ -3,7 +3,7 @@ import { getOperator } from "./channels/registry";
 import { resultToRouteState, routeSetup, upsertRoute } from "./channels/routes";
 import { selectOutreachChannels } from "./channels/select";
 import type { ChannelEndpoint, LotBrief, OpportunityStage } from "./channels/types";
-import { buyerLotAlreadyTouched } from "./ledger";
+import { buyerLotAlreadyTouched, buyerLotFormBlocked } from "./ledger";
 
 export function createOpportunity(input: {
   buyerId: number;
@@ -46,7 +46,9 @@ export async function dispatchOpportunity(input: {
 
   const lotIds = input.lots.map((l) => l.id);
   const touch = buyerLotAlreadyTouched(input.buyerId, lotIds);
-  if (touch.touched) {
+  const formRoute = ranked.find((r) => r.endpoint.channel === "form");
+  const formBlock = formRoute ? buyerLotFormBlocked(input.buyerId, lotIds) : { blocked: true, reason: "no form endpoint" };
+  if (touch.touched && formBlock.blocked) {
     for (const row of ranked) {
       upsertRoute({
         buyerId: input.buyerId,
@@ -103,9 +105,11 @@ export async function dispatchOpportunity(input: {
     return { selected, endpoint, result, composed };
   };
 
-  // Email is the only autonomous execute path. Form is bounce/invalid fallback.
+  // Email is the autonomous path. Form runs after bounce/invalid, or when email one-touch is exhausted.
   const emailRoute = ranked.find((r) => r.endpoint.channel === "email");
-  let chosen = await runOne(emailRoute ?? ranked[0]);
+  let chosen = touch.touched && formRoute && !formBlock.blocked
+    ? await runOne(formRoute)
+    : await runOne(emailRoute ?? ranked[0]);
   setStage(input.opportunityId, "channel_selected", chosen.selected.reason, chosen.endpoint.channel, chosen.endpoint.handle);
   setStage(input.opportunityId, "prepared", "composed");
 

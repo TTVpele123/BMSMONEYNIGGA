@@ -2,7 +2,7 @@ import { LIVE_DOMAIN_CAP, liveSentToDomainToday } from "./caps";
 import { recordEndpoint } from "./channels/select";
 import { audit, db } from "./db";
 import { extractBuyerEmail } from "./email/address";
-import { buyerLotAlreadyTouched } from "./ledger";
+import { buyerLotFormBlocked } from "./ledger";
 import { isDeadInbox, purgeDeadInboxEndpoints } from "./suppression";
 import { lotHasSendableMedia } from "./email/attachments";
 import { emit } from "./events";
@@ -403,7 +403,7 @@ function formJobLotIds(packet: { lots?: Array<{ id?: number }>; idempotencyKey?:
   return tail.split(",").map(Number).filter((n) => Number.isFinite(n) && n > 0);
 }
 
-/** Drop pending form jobs whose buyer+lot already had a confirmed send. Bounce-only is not a touch. */
+/** Drop pending form jobs only after a confirmed form send or a reply/opt-out. Email one-touch is not a form close. */
 export function expireTouchedFormJobs(): number {
   const rows = db().prepare(
     "SELECT id, input FROM grok_jobs WHERE agent='FORM_OPERATOR' AND state IN ('queued','claimed')"
@@ -415,8 +415,8 @@ export function expireTouchedFormJobs(): number {
     if (packet.buyerId == null) continue;
     const lotIds = formJobLotIds(packet);
     if (!lotIds.length) continue;
-    const touch = buyerLotAlreadyTouched(packet.buyerId, lotIds);
-    if (!touch.touched) continue;
+    const touch = buyerLotFormBlocked(packet.buyerId, lotIds);
+    if (!touch.blocked) continue;
     db().prepare(
       "UPDATE grok_jobs SET state='failed', result=?, finished_at=datetime('now') WHERE id=? AND state IN ('queued','claimed')"
     ).run(JSON.stringify({ cancelled: true, reason: touch.reason }), row.id);

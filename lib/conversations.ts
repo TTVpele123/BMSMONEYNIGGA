@@ -6,7 +6,7 @@ import { createOpportunity, dispatchOpportunity } from "./opportunity";
 import { buyerHasPendingFormJob } from "./channels/form-exec";
 import { hasOutreachPath, recordEndpoint, selectOutreachChannels } from "./channels/select";
 import { extractBuyerEmail } from "./email/address";
-import { buyerLotAlreadyTouched, untouchedLotIds } from "./ledger";
+import { formOpenLotIds, untouchedLotIds } from "./ledger";
 import { pauseLotsMissingOriginalMedia } from "./repairs";
 import { isDeadInbox, suppressedDomainSet } from "./suppression";
 import { applyBetterContact } from "./targeting";
@@ -85,6 +85,7 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
   db().prepare("UPDATE lots SET state='outreach_active', updated_at=datetime('now') WHERE id=? AND state IN ('structured','media_ready','matchable')").run(lotId);
 
   let queued = 0;
+  let formQueued = 0;
   // Walk ranked buyers until we queue up to 20 still-eligible (unsent) targets — do not
   // burn the matching window on one-touch / already-sent buyers after the daily cap was removed.
   const rankedEligible = ranked.filter((m) => !m.hardDisqualified && m.score >= 0.45);
@@ -112,20 +113,27 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
     ).all(buyer.id) as { id: number }[];
     const lotIds = otherLots.map((x) => x.id).filter((id) => lotHasSendableMedia(id));
     if (!lotIds.includes(lotId)) lotIds.unshift(lotId);
-    const topLots = untouchedLotIds(buyer.id, lotIds).filter((id) => lotHasSendableMedia(id)).slice(0, 3);
+    const emailLots = untouchedLotIds(buyer.id, lotIds).filter((id) => lotHasSendableMedia(id));
+    const formLots = formOpenLotIds(buyer.id, lotIds).filter((id) => lotHasSendableMedia(id));
+    const usingEmail = emailLots.includes(lotId);
+    const usingForm = !usingEmail && formLots.includes(lotId);
+    const topLots = (usingEmail ? emailLots : usingForm ? formLots : []).slice(0, 3);
     if (!topLots.includes(lotId) || !topLots.length) continue;
 
-    if (outboundMode() === "live" && liveSentToDomainToday(buyer.domain) >= LIVE_DOMAIN_CAP) continue;
+    if (usingEmail && outboundMode() === "live" && liveSentToDomainToday(buyer.domain) >= LIVE_DOMAIN_CAP) continue;
 
     const contactEmail = liveContactEmail(buyer.id);
     if (contactEmail) {
       recordEndpoint({ buyerId: buyer.id, channel: "email", handle: contactEmail, source: "contact_extract" });
     }
-    if (buyerLotAlreadyTouched(buyer.id, topLots).touched) continue;
     if (!hasOutreachPath(buyer.id)) continue;
     const routes = selectOutreachChannels(buyer.id);
+    const hasForm = routes.some((r) => r.endpoint.channel === "form");
+    if (usingForm) {
+      if (!hasForm || buyerHasPendingFormJob(buyer.id) || formQueued >= 8) continue;
+    }
     const hasEmail = routes.some((r) => r.endpoint.channel === "email");
-    if (!hasEmail && buyerHasPendingFormJob(buyer.id)) continue;
+    if (!hasEmail && !usingForm && buyerHasPendingFormJob(buyer.id)) continue;
     const rankedEmail = routes.find((r) => r.endpoint.channel === "email")?.endpoint.handle ?? contactEmail;
     const convoId = ensureConversation(buyer.id, buyer.outreach_channel || "unknown", rankedEmail);
     attachLots(convoId, topLots);
@@ -153,11 +161,11 @@ export async function runMatching(lotId: number): Promise<{ matches: number; que
       ).run(dispatched.channel ?? "unknown", convoId);
       queued += 1;
     } else if (dispatched.status === "deferred" || dispatched.status === "duplicate") {
-      // Form/Grok packets and already-attempted rows are not live-send progress.
-      // Do not consume the matching window or the next email-capable buyer is skipped forever.
+      // Form/Grok packets are not Gmail progress. Do not consume the email matching window.
       db().prepare(
         "UPDATE conversations SET channel=?, updated_at=datetime('now') WHERE id=?"
       ).run(dispatched.channel ?? "unknown", convoId);
+      if (dispatched.status === "deferred" && dispatched.channel === "form") formQueued += 1;
     }
   }
   audit("matching", "lot_matched", { entityType: "lots", entityId: lotId, detail: { matches: ranked.length, queued } });

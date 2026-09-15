@@ -89,6 +89,36 @@ export function untouchedLotIds(buyerId: number, lotIds: number[]): number[] {
   return lotIds.filter((id) => !buyerLotAlreadyTouched(buyerId, [id]).touched);
 }
 
+/**
+ * Email one-touch does not close the public-form path.
+ * Form is blocked only after a confirmed form send, or a reply / opt-out / suppression on the buyer+lot.
+ */
+export function buyerLotFormBlocked(buyerId: number, lotIds: number[]): { blocked: boolean; reason: string } {
+  for (const lotId of lotIds) {
+    const row = db().prepare(
+      `SELECT status FROM outreach_ledger
+        WHERE buyer_id=? AND lot_id=?
+          AND status IN ('replied_manual_only','opted_out','suppressed')
+        LIMIT 1`
+    ).get(buyerId, lotId) as { status: LedgerStatus } | undefined;
+    if (row) return { blocked: true, reason: `one-touch: ${row.status} for lot ${lotId}` };
+  }
+  const sent = db().prepare(
+    "SELECT lot_ids FROM outreach_attempts WHERE buyer_id=? AND channel='form' AND status='sent'"
+  ).all(buyerId) as Array<{ lot_ids: string }>;
+  for (const row of sent) {
+    let ids: number[] = [];
+    try { ids = JSON.parse(row.lot_ids) as number[]; } catch { ids = []; }
+    const hit = ids.find((id) => lotIds.includes(id));
+    if (hit != null) return { blocked: true, reason: `one-touch: form already sent lot ${hit}` };
+  }
+  return { blocked: false, reason: "" };
+}
+
+export function formOpenLotIds(buyerId: number, lotIds: number[]): number[] {
+  return lotIds.filter((id) => !buyerLotFormBlocked(buyerId, [id]).blocked);
+}
+
 /** Address-terminal. Does not one-touch the buyer+lot — form may still run once. */
 export function markBounced(email: string): void {
   db().prepare(

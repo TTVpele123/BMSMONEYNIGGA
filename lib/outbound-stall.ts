@@ -2,7 +2,7 @@ import { LIVE_DAILY_CAP, LIVE_DOMAIN_CAP, liveSentToDomainToday, liveSentToday }
 import { selectOutreachChannels } from "./channels/select";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
 import { gmailConfigured } from "./email/provider";
-import { untouchedLotIds } from "./ledger";
+import { formOpenLotIds, untouchedLotIds } from "./ledger";
 import { lotEligibleForResearch } from "./research";
 import { isSuppressed } from "./suppression";
 
@@ -81,13 +81,17 @@ function buyerSendableWithoutSafetyBlock(buyerId: number, domain: string, lotIds
   const convo = db().prepare("SELECT state FROM conversations WHERE buyer_id=?").get(buyerId) as { state: string } | undefined;
   if (convo && ["replied", "qualified", "escalated", "suppressed"].includes(convo.state)) return { any: false, email: false };
   const openLots = untouchedLotIds(buyerId, lotIds);
-  if (!openLots.length) return { any: false, email: false };
-  if (!buyerFitsActiveLots(buyerId, openLots)) return { any: false, email: false };
+  const formLots = formOpenLotIds(buyerId, lotIds);
+  if (!openLots.length && !formLots.length) return { any: false, email: false };
+  const fitLots = openLots.length ? openLots : formLots;
+  if (!buyerFitsActiveLots(buyerId, fitLots)) return { any: false, email: false };
   const channels = selectOutreachChannels(buyerId);
   if (!channels.length) return { any: false, email: false };
   const hasEmail = channels.some((c) => c.endpoint.channel === "email");
-  const emailSendable = hasEmail && liveSentToDomainToday(domain) < LIVE_DOMAIN_CAP;
-  return { any: true, email: emailSendable };
+  const hasForm = channels.some((c) => c.endpoint.channel === "form");
+  const emailSendable = Boolean(hasEmail && openLots.length && liveSentToDomainToday(domain) < LIVE_DOMAIN_CAP);
+  const any = Boolean((hasEmail && openLots.length) || (hasForm && formLots.length));
+  return { any, email: emailSendable };
 }
 
 export function countEligibleUntouchedBuyers(lotIds: number[]): { any: number; email: number } {

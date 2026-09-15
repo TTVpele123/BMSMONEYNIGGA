@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { db } from "../lib/db";
-import { buyerLotAlreadyTouched, recordSend, untouchedLotIds } from "../lib/ledger";
+import { buyerLotAlreadyTouched, buyerLotFormBlocked, formOpenLotIds, recordSend, untouchedLotIds } from "../lib/ledger";
 import { enrollBuyer } from "../lib/research";
 
 function buyer(domain: string): number {
@@ -28,5 +28,16 @@ describe("email-level one-touch", () => {
     expect(buyerLotAlreadyTouched(dup, [hood]).touched).toBe(true);
     expect(buyerLotAlreadyTouched(dup, [drill]).touched).toBe(false);
     expect(untouchedLotIds(dup, [hood, drill])).toEqual([drill]);
+  });
+
+  it("keeps the public form open after email one-touch", () => {
+    const first = buyer("form-open.com");
+    db().prepare("INSERT INTO buyer_contacts(buyer_id,email,verification) VALUES(?,'buy@form-open.com','verified')").run(first);
+    db().prepare("INSERT INTO lots(external_key,title,category,state) VALUES('form-hood','hoodies','apparel-basic','matchable')").run();
+    const hood = (db().prepare("SELECT id FROM lots WHERE external_key='form-hood'").get() as { id: number }).id;
+    recordSend("buy@form-open.com", hood, first);
+    expect(buyerLotAlreadyTouched(first, [hood]).touched).toBe(true);
+    expect(buyerLotFormBlocked(first, [hood]).blocked).toBe(false);
+    expect(formOpenLotIds(first, [hood])).toEqual([hood]);
   });
 });

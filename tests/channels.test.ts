@@ -129,7 +129,7 @@ describe("channel router", () => {
     expect(formSent).toBeUndefined();
   });
 
-  it("suppresses every channel after a buyer+lot send", async () => {
+  it("falls back to form after email one-touch without consuming Gmail", async () => {
     const b = buyer("touched.com");
     db().prepare("INSERT INTO buyer_contacts(buyer_id,email,verification) VALUES(?,'buy@touched.com','verified')").run(b);
     recordEndpoint({ buyerId: b, channel: "form", handle: "https://touched.com/form", confidence: 0.8, verified: true, source: "test" });
@@ -142,6 +142,7 @@ describe("channel router", () => {
        VALUES(?,?,?,'[${lot.id}]','s','b','[]','sent','provider accepted','touch-1')`
     ).run(convoId, b, "email");
     expect(buyerLotAlreadyTouched(b, [lot.id]).touched).toBe(true);
+    seedMedia(lot.id);
     const oppId = createOpportunity({ buyerId: b, conversationId: convoId, lotIds: [lot.id] });
     const result = await dispatchOpportunity({
       opportunityId: oppId,
@@ -151,10 +152,33 @@ describe("channel router", () => {
       domain: "touched.com",
       lots: [{ id: lot.id, title: "socks", category: "apparel-basic", quantity: 50, unit_price: 2, brand: null }],
     });
+    expect(result.channel).toBe("form");
+    expect(result.status).toBe("dry_run");
+    expect(result.reason).toMatch(/form/);
+  });
+
+  it("still blocks when email one-touch is exhausted and there is no form", async () => {
+    const b = buyer("emailonly-touched.com");
+    db().prepare("INSERT INTO buyer_contacts(buyer_id,email,verification) VALUES(?,'buy@emailonly-touched.com','verified')").run(b);
+    const convo = db().prepare("INSERT INTO conversations(buyer_id,state,channel) VALUES(?,'idle','email')").run(b);
+    const convoId = Number(convo.lastInsertRowid);
+    db().prepare("INSERT INTO lots(external_key,title,category,state) VALUES('ch-3b','socks','apparel-basic','matchable')").run();
+    const lot = db().prepare("SELECT id FROM lots WHERE external_key='ch-3b'").get() as { id: number };
+    db().prepare(
+      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key)
+       VALUES(?,?,?,'[${lot.id}]','s','b','[]','sent','provider accepted','touch-email-only')`
+    ).run(convoId, b, "email");
+    const oppId = createOpportunity({ buyerId: b, conversationId: convoId, lotIds: [lot.id] });
+    const result = await dispatchOpportunity({
+      opportunityId: oppId,
+      conversationId: convoId,
+      buyerId: b,
+      company: "Email Only",
+      domain: "emailonly-touched.com",
+      lots: [{ id: lot.id, title: "socks", category: "apparel-basic", quantity: 50, unit_price: 2, brand: null }],
+    });
     expect(result.status).toBe("blocked");
     expect(result.reason).toMatch(/one-touch/);
-    const states = db().prepare("SELECT DISTINCT state FROM channel_routes WHERE opportunity_id=?").all(oppId) as Array<{ state: string }>;
-    expect(states.map((s) => s.state)).toEqual(["suppressed"]);
   });
 
   it("marks LinkedIn needs_human instead of submitting", async () => {
@@ -328,30 +352,39 @@ describe("channel router", () => {
     expect(interpretFormResult({ submitted: false }).state).toBe("deferred");
   });
 
-  it("claiming FORM_OPERATOR cancels jobs whose buyer+lot already had a confirmed send", () => {
-    const sent = buyer("staleform.com");
+  it("claiming FORM_OPERATOR keeps email-touched jobs and cancels confirmed form sends", () => {
+    const emailed = buyer("staleform.com");
     const bounced = buyer("bounceformjob.com");
+    const formed = buyer("formdone.com");
     db().prepare("INSERT INTO lots(external_key,title,category,state) VALUES('stale-lot','tees','apparel-basic','matchable')").run();
     const lot = db().prepare("SELECT id FROM lots WHERE external_key='stale-lot'").get() as { id: number };
-    recordSend("buy@staleform.com", lot.id, sent);
+    recordSend("buy@staleform.com", lot.id, emailed);
     db().prepare(
       "INSERT INTO outreach_ledger(contact_email,lot_id,buyer_id,status) VALUES('dead@bounceformjob.com',?,?,'bounced')"
     ).run(lot.id, bounced);
+    const formedConvo = Number(db().prepare("INSERT INTO conversations(buyer_id,state,channel) VALUES(?,'idle','form')").run(formed).lastInsertRowid);
+    db().prepare(
+      `INSERT INTO outreach_attempts(conversation_id,buyer_id,channel,lot_ids,subject,body,media_hashes,status,reason,idempotency_key)
+       VALUES(?,?,?,'[${lot.id}]','s','b','[]','sent','form confirmation recorded','form-done-1')`
+    ).run(formedConvo, formed, "form");
 
-    const staleId = enqueueGrokJob("FORM_OPERATOR", "fill", {
-      buyerId: sent, lots: [{ id: lot.id }], idempotencyKey: `opp:1:form:${lot.id}`,
+    const emailTouchedId = enqueueGrokJob("FORM_OPERATOR", "fill", {
+      buyerId: emailed, lots: [{ id: lot.id }], idempotencyKey: `opp:1:form:${lot.id}`,
     });
     const liveId = enqueueGrokJob("FORM_OPERATOR", "fill", {
       buyerId: bounced, lots: [{ id: lot.id }], idempotencyKey: `opp:2:form:${lot.id}`,
     });
+    const formDoneId = enqueueGrokJob("FORM_OPERATOR", "fill", {
+      buyerId: formed, lots: [{ id: lot.id }], idempotencyKey: `opp:3:form:${lot.id}`,
+    });
 
     expect(claimGrokJobs()).toEqual([]);
     const claimed = claimGrokJobs("FORM_OPERATOR");
-    expect(claimed.map((j) => j.id)).toEqual([liveId]);
-    const stale = db().prepare("SELECT state, result FROM grok_jobs WHERE id=?").get(staleId) as { state: string; result: string };
+    expect(claimed.map((j) => j.id).sort((a, b) => a - b)).toEqual([emailTouchedId, liveId].sort((a, b) => a - b));
+    const stale = db().prepare("SELECT state, result FROM grok_jobs WHERE id=?").get(formDoneId) as { state: string; result: string };
     expect(stale.state).toBe("failed");
-    expect(stale.result).toMatch(/one-touch/);
-    expect(buyerLotAlreadyTouched(sent, [lot.id]).touched).toBe(true);
+    expect(stale.result).toMatch(/form already sent/);
+    expect(buyerLotAlreadyTouched(emailed, [lot.id]).touched).toBe(true);
     expect(buyerLotAlreadyTouched(bounced, [lot.id]).touched).toBe(false);
   });
 

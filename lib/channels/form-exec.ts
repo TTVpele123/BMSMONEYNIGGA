@@ -1,7 +1,7 @@
 import { AUTHORIZED_SENDER } from "../email/address";
 import { listSendableMediaFiles, selectSendableLots } from "../email/attachments";
 import { audit, db, killSwitchOn, outboundMode } from "../db";
-import { buyerLotAlreadyTouched } from "../ledger";
+import { buyerLotFormBlocked } from "../ledger";
 import { assertLiveForm } from "../outbound-gate";
 import { enqueueGrokJob } from "../research";
 import { isSuppressed } from "../suppression";
@@ -139,8 +139,8 @@ export function executeForm(ctx: OpportunityContext, prepared: PreparedOutreach)
   if (isSuppressed(ctx.domain).suppressed) {
     return { ok: false, status: "blocked", reason: `suppressed (${ctx.domain})` };
   }
-  const touch = buyerLotAlreadyTouched(ctx.buyerId, lotIds);
-  if (touch.touched) {
+  const touch = buyerLotFormBlocked(ctx.buyerId, lotIds);
+  if (touch.blocked) {
     return { ok: false, status: "blocked", reason: touch.reason };
   }
 
