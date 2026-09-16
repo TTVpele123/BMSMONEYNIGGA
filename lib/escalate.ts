@@ -1,5 +1,5 @@
 import { audit, db } from "./db";
-import { buyerAuthoredReply, classifyReply, type ReplyAnalysisT } from "./classify";
+import { buyerAuthoredReply, classifyReply, isOliverHandoffInstruction, type ReplyAnalysisT } from "./classify";
 import { listSendableMediaFiles } from "./email/attachments";
 
 type LotRef = { id: number; title: string };
@@ -184,9 +184,10 @@ export function refreshOpenHandoffLots(): number {
     const lots = lotsForEscalation(row.conversation_id, row.buyer_id);
     const nextIds = lots.map((l) => l.id);
     const prevIds = parseLotIds(row.lot_ids);
-    const job = db().prepare(
-      "SELECT id, input FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ? AND state IN ('queued','claimed')"
-    ).get(`%oliver_handoff:${row.id}%`) as { id: number; input: string } | undefined;
+    const job = (db().prepare(
+      "SELECT id, input, instruction FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ? AND state IN ('queued','claimed')"
+    ).all(`%oliver_handoff:${row.id}%`) as Array<{ id: number; input: string; instruction: string }>)
+      .find((jobRow) => isOliverHandoffInstruction(jobRow.instruction, row.id));
     const same = nextIds.length === prevIds.length && nextIds.every((id, i) => id === prevIds[i]);
     if (same && nextIds.length && !job) continue;
     const inbound = db().prepare(

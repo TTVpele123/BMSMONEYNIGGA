@@ -1,5 +1,5 @@
 import { audit, db } from "./db";
-import { buyerAuthoredReply, classifyReply, isHotLead, looksLikeAutoAck, usableDirectPhone, type ReplyAnalysisT } from "./classify";
+import { buyerAuthoredReply, classifyReply, isHotLead, isOliverHandoffInstruction, looksLikeAutoAck, usableDirectPhone, type ReplyAnalysisT } from "./classify";
 import { extractFailedRecipient, looksLikeHardBounce, looksLikeSenderLimit } from "./email/bounce";
 import { isOurMailbox, parseFromHeader } from "./email/address";
 import { noteGmailSenderLimit } from "./email/provider";
@@ -12,7 +12,27 @@ import { writeBounce, writeUnsubscribe } from "./suppression";
 import { recordQualityOutcome, sourceForEmail } from "./targeting";
 import { queueOliverHandoff, sendWarmReply, shouldSendWarmReply } from "./warm-inbound";
 
-/** Inbound-verified mobile/direct only. Scraped / web / company switchboard numbers are not buyer cells. */
+function phoneDigitsKey(phone: string | null | undefined): string {
+  return (phone ?? "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+}
+
+function inboundPhoneFromGenuineReply(buyerId: number, phone: string): boolean {
+  const rows = db().prepare(
+    `SELECT classification, raw_text, phone FROM inbound_events
+      WHERE buyer_id=? AND phone IS NOT NULL AND trim(phone)!=''
+      ORDER BY id DESC LIMIT 12`
+  ).all(buyerId) as Array<{ classification: string; raw_text: string | null; phone: string }>;
+  const want = phoneDigitsKey(phone);
+  const matching = rows.filter((row) => phoneDigitsKey(row.phone) === want);
+  if (!matching.length) return true;
+  return matching.some((row) => {
+    if (["bounce", "send_limit", "out_of_office", "unsubscribe", "suspicious", "not_interested"].includes(row.classification)) return false;
+    if (looksLikeAutoAck(row.raw_text ?? "") && !/\?/.test(buyerAuthoredReply(row.raw_text ?? ""))) return false;
+    return true;
+  });
+}
+
+/** Inbound-verified mobile from a genuine reply only. Scraped / web / auto-ack company numbers are not buyer cells. */
 export function existingDirectPhone(buyerId: number): string | null {
   const rows = db().prepare(
     `SELECT phone FROM buyer_contacts
@@ -21,7 +41,7 @@ export function existingDirectPhone(buyerId: number): string | null {
   ).all(buyerId) as Array<{ phone: string }>;
   for (const row of rows) {
     const ok = usableDirectPhone(row.phone);
-    if (ok) return ok;
+    if (ok && inboundPhoneFromGenuineReply(buyerId, ok)) return ok;
   }
   return null;
 }
@@ -209,10 +229,6 @@ export function closeFalseBounceHandoffs(): number {
   ).run().changes;
 }
 
-function phoneDigitsKey(phone: string | null | undefined): string {
-  return (phone ?? "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
-}
-
 /** Drop stale open packets that are not an inbound-verified cell and have no Oliver job. */
 export function closeInvalidOpenHandoffs(): number {
   const rows = db().prepare(
@@ -281,9 +297,10 @@ function liftFalseBounceSuppress(email: string): void {
 }
 
 function hasOliverHandoffJob(escalationId: number): boolean {
-  return Boolean(db().prepare(
-    "SELECT id FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ?"
-  ).get(`%oliver_handoff:${escalationId}%`));
+  const rows = db().prepare(
+    "SELECT instruction FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ?"
+  ).all(`%oliver_handoff:${escalationId}%`) as Array<{ instruction: string }>;
+  return rows.some((row) => isOliverHandoffInstruction(row.instruction, escalationId));
 }
 
 function alreadyQueuedOliverHandoff(buyerId: number, phone: string): boolean {

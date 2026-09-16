@@ -1,4 +1,4 @@
-import { buyerAuthoredReply, looksLikeAutoAck, type ReplyAnalysisT } from "./classify";
+import { buyerAuthoredReply, isOliverHandoffInstruction, looksLikeAutoAck, type ReplyAnalysisT } from "./classify";
 import { audit, db, killSwitchOn, outboundMode } from "./db";
 import { AUTHORIZED_SENDER } from "./email/address";
 import { sendAuthorizedEmail } from "./email/provider";
@@ -120,9 +120,10 @@ export function queueOliverHandoff(input: { escalationId: number; packet: string
     | { id: number; state: string; lot_ids: string }
     | undefined;
   if (!esc) return 0;
-  const existing = db().prepare(
-    "SELECT id, state FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ? ORDER BY id DESC LIMIT 1"
-  ).get(`%${key}%`) as { id: number; state: string } | undefined;
+  const existing = (db().prepare(
+    "SELECT id, state, instruction FROM grok_jobs WHERE agent='INBOUND_ANALYST' AND instruction LIKE ? ORDER BY id DESC"
+  ).all(`%${key}%`) as Array<{ id: number; state: string; instruction: string }>)
+    .find((row) => isOliverHandoffInstruction(row.instruction, input.escalationId));
   // One-shot: already handed or already successfully sent — never queue a second Oliver message.
   if (esc.state === "handed_to_oliver" || existing?.state === "done") return existing?.id ?? 0;
   const lotIds = (() => {

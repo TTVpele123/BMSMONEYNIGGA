@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { classifyReply, extractPhone, looksLikeAutoAck } from "../lib/classify";
+import { classifyReply, extractPhone, isOliverHandoffInstruction, looksLikeAutoAck } from "../lib/classify";
 import { db } from "../lib/db";
 import { createEscalation, photosForLots, refreshOpenHandoffLots } from "../lib/escalate";
 import { continueMissedPhoneHandoffs, continueWarmInbound, processInbound } from "../lib/inbound";
@@ -409,6 +409,28 @@ describe("warm inbound", () => {
       from: "info@formack.com",
       text: "Bailey Saevitzon bevestiging formulier ingevuld Firma Reinders Hardenberg",
       providerMessageId: "form-ack-1",
+    });
+    expect(r.escalated).toBe(false);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST'").get() as { n: number }).n).toBe(0);
+  });
+
+  it("does not treat oliver_handoff:2 as the job for escalation 29", () => {
+    expect(isOliverHandoffInstruction("send once. oliver_handoff:29", 2)).toBe(false);
+    expect(isOliverHandoffInstruction("send once. oliver_handoff:29", 29)).toBe(true);
+    expect(isOliverHandoffInstruction("send once. oliver_handoff:2", 2)).toBe(true);
+  });
+
+  it("does not reuse a company number stored inbound from an auto-ack", async () => {
+    const buyerId = seedBuyer("ackphone.com");
+    db().prepare("UPDATE buyer_contacts SET phone='212-555-0144', verification='inbound' WHERE buyer_id=?").run(buyerId);
+    db().prepare(
+      `INSERT INTO inbound_events(buyer_id,from_address,classification,interest_level,phone,raw_text)
+       VALUES(?,'buy@ackphone.com','unknown','unknown','212-555-0144','Thank you for reaching out to Ack Phone.')`
+    ).run(buyerId);
+    const r = await processInbound({
+      from: "buy@ackphone.com",
+      text: "Thanks — send the hoodie details when you can.",
+      providerMessageId: "ack-phone-1",
     });
     expect(r.escalated).toBe(false);
     expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST'").get() as { n: number }).n).toBe(0);

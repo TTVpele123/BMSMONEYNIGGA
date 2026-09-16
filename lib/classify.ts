@@ -187,3 +187,8 @@ export function isHotLead(a: ReplyAnalysisT): boolean {
   if (!usableDirectPhone(a.phone)) return false;
   return true;
 }
+
+/** `oliver_handoff:2` must not match `oliver_handoff:29`. */
+export function isOliverHandoffInstruction(instruction: string, escalationId: number): boolean {
+  return new RegExp(`oliver_handoff:${escalationId}(?!\\d)`).test(instruction);
+}
