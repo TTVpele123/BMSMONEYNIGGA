@@ -37,6 +37,30 @@ export function writeBounce(address: string): void {
   ).run(addrOf(address), "hard bounce — address only", "bounce");
 }
 
+/** Hard-bounced address: suppression row or buyer_contacts.verification='bounced'. Never retry. */
+export function isDeadInbox(emailOrDomain: string): boolean {
+  const addr = addrOf(emailOrDomain);
+  if (!addr.includes("@")) return isSuppressed(addr).suppressed;
+  if (isSuppressed(addr).suppressed) return true;
+  const row = db().prepare(
+    "SELECT 1 AS ok FROM buyer_contacts WHERE lower(email)=lower(?) AND verification='bounced' LIMIT 1"
+  ).get(addr) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
+/** Drop leftover email endpoints that match a dead inbox so matching cannot re-select them. */
+export function purgeDeadInboxEndpoints(): number {
+  const info = db().prepare(
+    `DELETE FROM buyer_channel_endpoints
+      WHERE channel='email'
+        AND (
+          lower(handle) IN (SELECT lower(email) FROM buyer_contacts WHERE verification='bounced' AND email IS NOT NULL)
+          OR lower(handle) IN (SELECT lower(address_or_domain) FROM suppressions WHERE source='bounce')
+        )`
+  ).run();
+  return info.changes;
+}
+
 export function suppressedDomainSet(): Set<string> {
   const rows = db().prepare("SELECT address_or_domain FROM suppressions").all() as { address_or_domain: string }[];
   return new Set(rows.map((r) => r.address_or_domain.toLowerCase()));

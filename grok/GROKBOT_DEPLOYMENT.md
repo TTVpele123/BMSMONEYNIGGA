@@ -1,5 +1,7 @@
 # GrokBot deployment checklist (copy/paste)
 
+Bailey operating standard is in `.cursor/rules/bmsm.mdc` and `DECISIONS.md` §13–20. Prompts below must keep it: named buyers with generics as fallback; form click ≠ submit; no CAPTCHA bypass; skip required unknown Location/Monthly returns; Oliver WhatsApp only for a verified phone handoff, once.
+
 **Do not run any of this until GrokBot usage resets.** Do not create form/social agents on day 1. Do not create a mega-agent.
 
 Engine: `http://localhost:3222` · Repo: `~/Projects/BMSMONEYNIGGA` · Mode must stay `dry_run` until you explicitly flip it.

@@ -42,7 +42,34 @@ export function assertLiveOutbound(input: OutboundGateInput): { ok: true } | { o
     if (!lotHasSendableMedia(lotId)) return { ok: false, reason: "lot lacks eligible original Oliver product media" };
   }
 
-  if (liveSentToday() >= LIVE_DAILY_CAP) return { ok: false, reason: `daily cap ${LIVE_DAILY_CAP}` };
+  if (LIVE_DAILY_CAP != null && liveSentToday() >= LIVE_DAILY_CAP) return { ok: false, reason: `daily cap ${LIVE_DAILY_CAP}` };
   if (domain && liveSentToDomainToday(domain) >= LIVE_DOMAIN_CAP) return { ok: false, reason: `domain cap ${LIVE_DOMAIN_CAP}` };
+  return { ok: true };
+}
+
+/** Form submit gate. Does not consume Gmail daily/domain caps. Never invents a To: inbox. */
+export function assertLiveForm(input: { url: string; domain?: string; lotIds?: number[] }): { ok: true } | { ok: false; reason: string } {
+  if (outboundMode() !== "live") return { ok: false, reason: "outbound_mode is not live" };
+  if (killSwitchOn()) return { ok: false, reason: "outbound paused/held" };
+  const url = (input.url ?? "").trim();
+  if (!url) return { ok: false, reason: "missing form URL" };
+  if (isSuppressed(url).suppressed) return { ok: false, reason: `suppressed (${url})` };
+  const domain = (input.domain ?? "").toLowerCase();
+  if (domain && isSuppressed(domain).suppressed) return { ok: false, reason: `suppressed (${domain})` };
+  const lotIds = input.lotIds ?? [];
+  if (!lotIds.length) return { ok: false, reason: "lot lacks eligible original Oliver product media" };
+  for (const lotId of lotIds) {
+    const lot = db().prepare("SELECT project_gate, state FROM lots WHERE id=?").get(lotId) as
+      | { project_gate: string; state: string }
+      | undefined;
+    if (!lot) return { ok: false, reason: "lot lacks eligible original Oliver product media" };
+    if (lot.project_gate === "DO_NOT_MARKET" || lot.project_gate === "ARCHIVED") {
+      return { ok: false, reason: "lot is DO_NOT_MARKET" };
+    }
+    if (lot.state === "paused" || lot.state === "sold" || lot.state === "archived") {
+      return { ok: false, reason: "lot is DO_NOT_MARKET" };
+    }
+    if (!lotHasSendableMedia(lotId)) return { ok: false, reason: "lot lacks eligible original Oliver product media" };
+  }
   return { ok: true };
 }

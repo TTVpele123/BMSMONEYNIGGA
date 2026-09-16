@@ -1,8 +1,6 @@
-import { tick, heartbeat } from "@/lib/orchestrator";
-import { researchTick } from "@/lib/research";
+import { heartbeat, runSchedulerCycle } from "@/lib/orchestrator";
 
 export async function POST() {
-  const research = researchTick();
-  const orch = await tick();
-  return Response.json({ ok: true, research, orch, heartbeat: heartbeat() });
+  const cycle = await runSchedulerCycle();
+  return Response.json({ ok: true, ...cycle, heartbeat: heartbeat() });
 }

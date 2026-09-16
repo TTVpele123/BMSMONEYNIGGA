@@ -330,10 +330,44 @@ CREATE TABLE IF NOT EXISTS opportunities (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS contact_quality_stats (
+  quality TEXT NOT NULL,
+  source TEXT NOT NULL,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  bounced INTEGER NOT NULL DEFAULT 0,
+  replied INTEGER NOT NULL DEFAULT 0,
+  phone_captured INTEGER NOT NULL DEFAULT 0,
+  oliver_handoff INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (quality, source)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at, type);
 CREATE INDEX IF NOT EXISTS idx_lots_state ON lots(state, availability);
 CREATE INDEX IF NOT EXISTS idx_media_lot ON lot_media(lot_id, outreach_safe);
 CREATE INDEX IF NOT EXISTS idx_match_lot ON match_scores(lot_id, score);
 CREATE INDEX IF NOT EXISTS idx_research_pending ON research_jobs(state, kind);
+CREATE TABLE IF NOT EXISTS channel_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  buyer_id INTEGER NOT NULL REFERENCES buyers(id) ON DELETE CASCADE,
+  opportunity_id INTEGER REFERENCES opportunities(id) ON DELETE SET NULL,
+  lot_ids TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'discovered'
+    CHECK (state IN (
+      'discovered','qualified','ready','executing','submitted','confirmed','failed','deferred','needs_human','suppressed'
+    )),
+  blocker TEXT,
+  evidence TEXT,
+  prepared_subject TEXT,
+  prepared_body TEXT,
+  media_hashes TEXT NOT NULL DEFAULT '[]',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_endpoints_buyer ON buyer_channel_endpoints(buyer_id, channel);
 CREATE INDEX IF NOT EXISTS idx_opportunities_buyer ON opportunities(buyer_id, stage);
+CREATE INDEX IF NOT EXISTS idx_channel_routes_buyer ON channel_routes(buyer_id, state);
+CREATE INDEX IF NOT EXISTS idx_channel_routes_opp ON channel_routes(opportunity_id, channel);

@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { audit, db } from "./db";
 import { emit } from "./events";
-import { normalizeCategory } from "./matcher";
+import { inferLotCategory } from "./matcher";
 import { classifyOliverMedia } from "./media";
 import { mediaRoot } from "./paths";
 import { restoreLotIfEligible } from "./repairs";
@@ -27,7 +27,7 @@ export const WhatsAppIngest = z.object({
 export type WhatsAppIngestT = z.infer<typeof WhatsAppIngest>;
 
 function looksLikeGoods(text: string): boolean {
-  return /lot|unit|pcs|pairs|qty|quantity|\$|price|nike|adidas|nfl|apparel|shoe|sock|pallet|available|in stock/i.test(text);
+  return /lot|unit|pcs|pairs|qty|quantity|\$|price|nike|adidas|nfl|apparel|shoe|sandal|slide|slipper|footwear|sock|pallet|available|in stock/i.test(text);
 }
 
 function extractFacts(text: string): Record<string, string> {
@@ -44,8 +44,46 @@ function extractFacts(text: string): Record<string, string> {
 }
 
 function titleFrom(text: string): string {
-  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "Oliver lot";
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  // Never persist internal provenance as the product title.
+  if (!line || /^oliver(\s+lot)?$/i.test(line) || /\boliver\s+lot\b/i.test(line)) return "Available Inventory";
   return line.slice(0, 120);
+}
+
+function storeMediaForLot(
+  lotId: number,
+  messageId: string,
+  media: WhatsAppIngestT["messages"][number]["media"],
+  context: string,
+  seen: Set<string>,
+): number {
+  let certainMedia = 0;
+  for (const m of media) {
+    let storedPath = m.path;
+    if (m.bytes_base64) {
+      const buf = Buffer.from(m.bytes_base64, "base64");
+      const dest = path.join(mediaRoot(), "oliver", String(lotId));
+      fs.mkdirSync(dest, { recursive: true });
+      storedPath = path.join(dest, m.filename);
+      fs.writeFileSync(storedPath, buf);
+    }
+    if (!storedPath || !fs.existsSync(storedPath)) {
+      audit("lot_intake", "media_missing", { entityType: "lots", entityId: lotId, ok: false, detail: { filename: m.filename } });
+      continue;
+    }
+    const classified = classifyOliverMedia({ filePath: storedPath, filename: m.filename, context, seenHashes: seen });
+    const certain = classified.outreachSafe && classified.classification !== "screenshot_chat_capture";
+    db().prepare(
+      `INSERT INTO lot_media(lot_id,oliver_message_id,sha256,path,filename,bytes,width,height,classification,outreach_safe,association_certain)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(sha256) DO UPDATE SET lot_id=excluded.lot_id`
+    ).run(
+      lotId, messageId, classified.sha256, storedPath, m.filename, classified.bytes,
+      classified.width, classified.height, classified.classification, certain ? 1 : 0, certain ? 1 : 0,
+    );
+    if (certain) certainMedia += 1;
+  }
+  return certainMedia;
 }
 
 export function ingestWhatsApp(raw: unknown): { ok: true; newMessages: number; lotsTouched: number[] } {
@@ -57,6 +95,15 @@ export function ingestWhatsApp(raw: unknown): { ok: true; newMessages: number; l
   for (const msg of body.messages) {
     const existing = db().prepare("SELECT id, lot_id FROM whatsapp_messages WHERE message_id=?").get(msg.id) as { id: number; lot_id: number | null } | undefined;
     if (existing) {
+      if (existing.lot_id && msg.media.length) {
+        const certainMedia = storeMediaForLot(existing.lot_id, msg.id, msg.media, msg.text ?? "", seen);
+        db().prepare("UPDATE whatsapp_messages SET scanned_at=? WHERE message_id=?").run(body.scanned_at, msg.id);
+        if (certainMedia > 0) {
+          db().prepare("UPDATE lots SET state='matchable', availability='active', updated_at=datetime('now') WHERE id=?").run(existing.lot_id);
+          restoreLotIfEligible(existing.lot_id);
+          emit("match.requested", { lotId: existing.lot_id }, `match.requested:${existing.lot_id}:${msg.id}:media`);
+        }
+      }
       if (existing.lot_id) lotsTouched.add(existing.lot_id);
       continue;
     }
@@ -70,8 +117,8 @@ export function ingestWhatsApp(raw: unknown): { ok: true; newMessages: number; l
     if (!goods) continue;
 
     const facts = extractFacts(msg.text ?? "");
-    const category = normalizeCategory(msg.text ?? "");
-    const title = titleFrom(msg.text ?? `Oliver lot ${msg.id}`);
+    const title = titleFrom(msg.text ?? "");
+    const category = inferLotCategory(title, msg.text ?? "");
     const externalKey = `wa:${msg.id}`;
 
     const insert = db().prepare(
@@ -97,32 +144,7 @@ export function ingestWhatsApp(raw: unknown): { ok: true; newMessages: number; l
       db().prepare("INSERT OR IGNORE INTO lot_facts(lot_id,key,value,source_message_id,confidence) VALUES(?,?,?,?,0.7)").run(lotId, k, v, msg.id);
     }
 
-    let certainMedia = 0;
-    for (const m of msg.media) {
-      let storedPath = m.path;
-      if (m.bytes_base64) {
-        const buf = Buffer.from(m.bytes_base64, "base64");
-        const dest = path.join(mediaRoot(), "oliver", String(lotId));
-        fs.mkdirSync(dest, { recursive: true });
-        storedPath = path.join(dest, m.filename);
-        fs.writeFileSync(storedPath, buf);
-      }
-      if (!storedPath || !fs.existsSync(storedPath)) {
-        audit("lot_intake", "media_missing", { entityType: "lots", entityId: lotId, ok: false, detail: { filename: m.filename } });
-        continue;
-      }
-      const classified = classifyOliverMedia({ filePath: storedPath, filename: m.filename, context: msg.text ?? "", seenHashes: seen });
-      const certain = classified.outreachSafe && classified.classification !== "screenshot_chat_capture";
-      db().prepare(
-        `INSERT INTO lot_media(lot_id,oliver_message_id,sha256,path,filename,bytes,width,height,classification,outreach_safe,association_certain)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(sha256) DO UPDATE SET lot_id=excluded.lot_id`
-      ).run(
-        lotId, msg.id, classified.sha256, storedPath, m.filename, classified.bytes,
-        classified.width, classified.height, classified.classification, certain ? 1 : 0, certain ? 1 : 0,
-      );
-      if (certain) certainMedia += 1;
-    }
+    const certainMedia = storeMediaForLot(lotId, msg.id, msg.media, msg.text ?? "", seen);
 
     if (certainMedia > 0) {
       db().prepare("UPDATE lots SET state='matchable', availability='active', updated_at=datetime('now') WHERE id=?").run(lotId);

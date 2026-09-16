@@ -2,7 +2,7 @@
 
 BMSMONEYNIGGA is the active system. Oliver Deal OS is a read-only data source, not the runtime.
 
-Email is the only **live** execution channel. Forms, Instagram, LinkedIn, marketplaces, and applications are registered operators that **defer**. Default outbound mode is `dry_run`.
+Email is live via Gmail. Public wholesale/contact forms are live via GrokBot/browser (confirmed only with thank-you/ticket evidence). LinkedIn is last-resort `needs_human`. Instagram, marketplaces, and vendor portals are research or rejected. Default outbound mode is `dry_run`.
 
 ```
 BUYER UNIVERSE → QUALIFY → MATCH → OPPORTUNITY ENGINE
@@ -40,8 +40,10 @@ No channel adapter may modify: `lib/matcher.ts`, `lib/suppression.ts`, lot/buyer
 
 - Verified email beats a form.
 - A wholesale form beats social if there is no useful email.
-- Instagram / LinkedIn only win when a handle exists.
-- Multiple channels → highest confidence / lowest friction.
+- Instagram / portals never win as a sales path.
+- LinkedIn only as last-resort human assist when a named person exists and email/form do not.
+- Named purchasing inbox beats generic `info@`.
+- Address bounce is not buyer+lot one-touch — form may run once.
 - **Never invent `purchasing@domain`.** A guessed inbox is not a channel.
 
 ## Adding a channel later

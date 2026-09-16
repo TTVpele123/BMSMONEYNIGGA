@@ -14,8 +14,11 @@ Made so implementation does not block on questions.
 10. **WhatsApp chat screenshots are never outreach media.** Only original Oliver product/warehouse photos with lot + message provenance.
 11. **Grok Bot is for browser UI only** (WhatsApp Web, forms, LinkedIn/Instagram). Deterministic code owns orchestration, state, and safety. xAI API (if present) may do extraction/copy; it does not refill Cursor Grok quota.
 12. **Clay spend stays $0.**
-13. **Do not auto-message Oliver.** Handoffs are packets for humans.
-14. **Authorized sender is `saevitzonoverstock@gmail.com`.** Local GrokBot settings state `saefamoverstock` was banned. Sign as Bailey Saevitzon / Saefam Overstock / 818-406-8612. Do not use personal or Berkeley mailboxes.
-15. **Email is the only live channel.** Forms / Instagram / LinkedIn / marketplaces are registered operators that defer. See CHANNELS.md.
+13. **Oliver WhatsApp outbound is only a verified phone-number handoff** (name + inbound-verified cell + relevant product + one short buyer note + original certain lot photos if available), sent once by WHATSAPP_SCANNER. Missing photos must not block. No status chatter. Scraped/company switchboard numbers are not buyer cells. No Bailey confirmation. No other automated Oliver messages.
+14. **Authorized senders are `saevitzonoverstock@gmail.com` and `saefamoverstock@gmail.com`.** They rotate on real Gmail provider limits only. Sign as Bailey Saevitzon / Saefam Overstock / 818-406-8612. Do not use personal or Berkeley mailboxes. Both inboxes feed the same inbound pipeline.
+15. **Email is the only live outbound channel.** Public wholesale/contact forms are the only additional outbound channel we will build (prepare now, submit later). LinkedIn is research + rare human assist. Instagram, vendor portals, marketplace chat, WhatsApp-to-buyers, and autodial are rejected.
 16. **Never invent a contact.** `purchasing@domain` is not a channel. Route only on stored endpoints.
-17. **Social/form live work is Phase 2/3** and must follow platform rules. No anti-automation circumvention.
+17. **No anti-automation circumvention.** CAPTCHA/login/MFA stops that route only.
+18. **Approved stack (2026-09-13):** named email first; bounce → one form fallback; buyer+lot one-touch except address bounce; Grok researches in live or dry_run (never sends).
+19. **Overnight clock (2026-09-14):** launchd `com.bmsmoneynigga.autonomy` POSTs `/api/jobs/tick` every 5 minutes and restarts :3222 if health is down. That HTTP cycle is the only clock (research, rematch, send, Gmail sync, inbound → phone → Oliver queue). No in-process `setInterval`. Email and confirmed public forms (GrokBot UI) are the execute paths; forms must not spin the matcher.
+20. **Bailey operating standard (2026-09-15):** named-buyer first-touch with generics as fallback; form click ≠ submit; skip required unknown Location/Monthly returns; continuous contact upgrades; reply uses stored mobile/direct before a phone ask; new Oliver inventory rematches in this same tick; do not weaken rails.

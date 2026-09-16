@@ -27,5 +27,6 @@ export function dbPath(): string {
 export function mediaRoot(): string {
   const dir = path.join(dataRoot(), "media");
   fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.join(dir, "pending"), { recursive: true });
   return dir;
 }

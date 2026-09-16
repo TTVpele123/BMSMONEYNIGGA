@@ -1,0 +1,21 @@
+---
+description: Require named Grok Bot agent verification before any paste
+alwaysApply: true
+---
+
+# Grok Bot agent targeting
+
+When sending instructions to an existing Grok Bot agent:
+
+1. Name the target first: `WHATSAPP_SCANNER`, `BUYER_RESEARCHER`, `FORM_OPERATOR`, `OPPORTUNITY_RESEARCHER`, etc.
+2. Open that agent (`grokbot://agent/<id>` is not enough by itself).
+3. Verify the **active chat** is that named agent before any clipboard paste or keystroke. Proof is the sidebar/header showing that name, or `lastViewedAt` on that agent becoming the newest. If proof is missing, **stop**.
+4. Never paste into whichever Grok Bot chat happens to be frontmost.
+5. Keep responsibilities isolated. Do not send Oliver/WhatsApp ingest or handoff work to `FORM_OPERATOR` or `BUYER_RESEARCHER`. Do not send form jobs to `WHATSAPP_SCANNER`.
+
+Known ids (do not guess others):
+
+- `WHATSAPP_SCANNER` `b5fe8267-d309-476e-9513-ab3f626ce8df`
+- `BUYER_RESEARCHER` `69c96649-b2be-4210-b05e-6b4c283cbd7e`
+- `FORM_OPERATOR` `1f4e9bfc-0391-4906-8e26-00954825a17f`
+- `OPPORTUNITY_RESEARCHER` `d4abf403-5663-4d11-9abb-40042316c629`

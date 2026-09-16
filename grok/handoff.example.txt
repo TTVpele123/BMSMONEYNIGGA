@@ -1,5 +1,7 @@
+Jane Buyer — 312-555-0199 — licensed hoodies
 OLIVER HANDOFF — do not auto-message Oliver
 Buyer: Example Wholesale (example.com)
+Conversation: 12
 Reason: phone captured
 Phone: 312-555-0199
 Interest: high / request_call

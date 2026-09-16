@@ -20,7 +20,7 @@ export const AGENTS = {
   BUYER_RESEARCHER: { permissions: ["GET /api/ops/snapshot", "GET /api/metrics", "POST /api/research/findings"], grok: true, phase: "1", createTomorrow: "after_scanner" },
   OPPORTUNITY_RESEARCHER: { permissions: ["GET /api/research/opportunities", "GET /api/research/coverage", "POST /api/research/findings"], grok: true, phase: "1", createTomorrow: "after_matching" },
   INBOUND_ANALYST: { permissions: ["inbound_events", "escalations"], grok: true, phase: "1", createTomorrow: false },
-  FORM_OPERATOR: { permissions: ["channel:form"], grok: true, live: false, phase: "2", createTomorrow: false },
+  FORM_OPERATOR: { permissions: ["channel:form", "GET /api/grok/jobs", "POST /api/grok/jobs", "POST /api/channels/form/result"], grok: true, live: true, phase: "2", createTomorrow: true },
   INSTAGRAM_OPERATOR: { permissions: ["channel:instagram"], grok: true, live: false, phase: "3", createTomorrow: false },
   LINKEDIN_OPERATOR: { permissions: ["channel:linkedin"], grok: true, live: false, phase: "3", createTomorrow: false },
   MARKETPLACE_OPERATOR: { permissions: ["channel:marketplace"], grok: true, live: false, phase: "3", createTomorrow: false },
