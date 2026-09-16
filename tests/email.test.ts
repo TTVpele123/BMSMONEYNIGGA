@@ -7,7 +7,7 @@ import { db, outboundMode, setSetting } from "../lib/db";
 import { AUTHORIZED_SENDER, DENIED_SENDER, PREVIOUS_SENDER, assertAuthorizedSender, extractBuyerEmail, parseRecipient } from "../lib/email/address";
 import { selectSendableLots } from "../lib/email/attachments";
 import { buildRawMessage } from "../lib/email/mime";
-import { gmailSendCooldownUntil, sendAuthorizedEmail, setGmailClient, type GmailClient, type GmailSendInput } from "../lib/email/provider";
+import { gmailSendCooldownUntil, mergeBuyerFirstIds, prioritizeInboxMessages, sendAuthorizedEmail, setGmailClient, type GmailClient, type GmailSendInput } from "../lib/email/provider";
 import { extractFailedRecipient, inboxBounceFlags } from "../lib/email/bounce";
 import { syncGmailInbox } from "../lib/email/sync";
 import { gmailAuthorizationUrl } from "../lib/email/oauth";
@@ -173,6 +173,51 @@ describe("1 Gmail provider + MIME + From lock", () => {
 });
 
 describe("2 Gmail inbox sync", () => {
+  it("keeps buyer message ids ahead of DSN noise", () => {
+    expect(mergeBuyerFirstIds(["reply-1"], ["dsn-1", "dsn-2", "reply-1", "dsn-3"], 2)).toEqual(["reply-1", "dsn-1"]);
+    const ordered = prioritizeInboxMessages([
+      { bounced: true, id: "dsn" },
+      { bounced: false, id: "reply" },
+    ]);
+    expect(ordered.map((m) => m.id)).toEqual(["reply", "dsn"]);
+  });
+
+  it("processes a buyer reply before DSNs in the same sync", async () => {
+    seedBuyer("replyfirst.com");
+    mockGmail({
+      listInbox: async () => ({
+        historyId: "101",
+        messages: [
+          {
+            providerMessageId: "g-dsn-first",
+            from: "Mail Delivery Subsystem <mailer-daemon@google.com>",
+            to: AUTHORIZED_SENDER,
+            subject: "Delivery Status Notification (Failure)",
+            text: "550 address not found",
+            bounced: true,
+            failedRecipient: "dead@noreplyfirst.com",
+          },
+          {
+            providerMessageId: "g-buyer-second",
+            from: "Buyer <buy@replyfirst.com>",
+            to: AUTHORIZED_SENDER,
+            subject: "Re: lot",
+            text: "Yes interested. Call 312-555-0188 this week.",
+            bounced: false,
+          },
+        ],
+      }),
+    });
+    const synced = await syncGmailInbox();
+    expect(synced.ok).toBe(true);
+    expect(synced.ingested).toBe(2);
+    const first = db().prepare(
+      "SELECT classification, phone FROM inbound_events ORDER BY id LIMIT 1"
+    ).get() as { classification: string; phone: string | null };
+    expect(first.classification).toBe("positive_interest");
+    expect(first.phone).toContain("312");
+  });
+
   it("routes replies, unsubscribes, bounces, and phones into processInbound", async () => {
     seedBuyer("inboxco.com");
     seedBuyer("stopco.com");

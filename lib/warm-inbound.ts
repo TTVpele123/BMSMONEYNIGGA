@@ -87,18 +87,11 @@ export function composeWarmReply(input: {
   alreadyHasPhone: boolean;
 }): { subject: string; body: string } | null {
   if (input.alreadyHasPhone) return null;
-  const lines = [
-    `Hi ${input.company} team,`,
-    "",
-    "Thanks for the reply.",
-  ];
+  const lines: string[] = [];
   if (input.answered.length) {
-    lines.push("", ...input.answered);
+    lines.push(`Hi ${input.company} team,`, "", ...input.answered, "");
   }
-  if (input.missing.length) {
-    lines.push("", `I don't have verified ${input.missing.join(", ")} on this lot, so I won't guess.`);
-  }
-  lines.push("", PHONE_ASK, "", "Bailey Saevitzon", "Saefam Overstock", "818-406-8612", AUTHORIZED_SENDER);
+  lines.push(PHONE_ASK, "", "Bailey Saevitzon", "Saefam Overstock", "818-406-8612", AUTHORIZED_SENDER);
   return { subject: input.subject, body: lines.join("\n") };
 }
 
@@ -145,7 +138,7 @@ export function queueOliverHandoff(input: { escalationId: number; packet: string
   }
   const jobId = enqueueGrokJob(
     "INBOUND_ANALYST",
-    `Send this to Oliver on WhatsApp as one message: name, phone, and product only. Attach the listed original lot photos if present. Do not add facts. Do not message anyone else. ${key}`,
+    `Send this to Oliver on WhatsApp as one message: name, cell, product, and the one short buyer note if present. Attach listed original lot photos if present. Empty photos must not block the send. No status chatter. Do not add facts. Do not message anyone else. ${key}`,
     payload,
   );
   const contact = db().prepare(

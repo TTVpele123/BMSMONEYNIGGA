@@ -14,7 +14,7 @@ Made so implementation does not block on questions.
 10. **WhatsApp chat screenshots are never outreach media.** Only original Oliver product/warehouse photos with lot + message provenance.
 11. **Grok Bot is for browser UI only** (WhatsApp Web, forms, LinkedIn/Instagram). Deterministic code owns orchestration, state, and safety. xAI API (if present) may do extraction/copy; it does not refill Cursor Grok quota.
 12. **Clay spend stays $0.**
-13. **Oliver WhatsApp outbound is only a verified phone-number handoff** (name + verified phone + relevant product + original certain lot photos), sent once by WHATSAPP_SCANNER. No Bailey confirmation. No other automated Oliver messages.
+13. **Oliver WhatsApp outbound is only a verified phone-number handoff** (name + inbound-verified cell + relevant product + one short buyer note + original certain lot photos if available), sent once by WHATSAPP_SCANNER. Missing photos must not block. No status chatter. Scraped/company switchboard numbers are not buyer cells. No Bailey confirmation. No other automated Oliver messages.
 14. **Authorized senders are `saevitzonoverstock@gmail.com` and `saefamoverstock@gmail.com`.** They rotate on real Gmail provider limits only. Sign as Bailey Saevitzon / Saefam Overstock / 818-406-8612. Do not use personal or Berkeley mailboxes. Both inboxes feed the same inbound pipeline.
 15. **Email is the only live outbound channel.** Public wholesale/contact forms are the only additional outbound channel we will build (prepare now, submit later). LinkedIn is research + rare human assist. Instagram, vendor portals, marketplace chat, WhatsApp-to-buyers, and autodial are rejected.
 16. **Never invent a contact.** `purchasing@domain` is not a channel. Route only on stored endpoints.

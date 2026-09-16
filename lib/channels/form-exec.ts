@@ -195,7 +195,7 @@ export function executeForm(ctx: OpportunityContext, prepared: PreparedOutreach)
   if (!pending) {
     enqueueGrokJob(
       "FORM_OPERATOR",
-      "Open the public wholesale/contact form in the job. Fill only Saefam + lot facts. Attach original Oliver photos if the form accepts files. Submit only if live=true and there is no CAPTCHA/login/MFA. A click is not success — report confirmation text. Never bypass safeguards.",
+      "Open the public wholesale/contact form in the job. Fill only Saefam + lot facts. Attach original Oliver photos if the form accepts files. Submit only if live=true and there is no CAPTCHA/Turnstile/login/MFA. CAPTCHA, Turnstile, broken, or impossible required fields → needs_human and continue the queue. A click is not success — report confirmation text. Never bypass safeguards.",
       packet,
     );
   }
@@ -222,7 +222,7 @@ export function applyFormResult(input: {
   let lotIds: number[] = [];
   try { lotIds = JSON.parse(attempt.lot_ids) as number[]; } catch { lotIds = []; }
 
-  if (input.needsHuman || /captcha|login|mfa|2fa|cloudflare/i.test(input.blocker ?? input.error ?? "")) {
+  if (input.needsHuman || /captcha|turnstile|hcaptcha|login|mfa|2fa|cloudflare/i.test(input.blocker ?? input.error ?? "")) {
     const reason = input.blocker ?? input.error ?? "form requires human action";
     persistAttempt({
       conversationId: attempt.conversation_id, buyerId: attempt.buyer_id, lotIds,

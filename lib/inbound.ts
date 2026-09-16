@@ -12,12 +12,12 @@ import { writeBounce, writeUnsubscribe } from "./suppression";
 import { recordQualityOutcome, sourceForEmail } from "./targeting";
 import { queueOliverHandoff, sendWarmReply, shouldSendWarmReply } from "./warm-inbound";
 
-/** Prefer an already-stored mobile/direct before asking again. Never invent a number. */
+/** Inbound-verified mobile/direct only. Scraped / web / company switchboard numbers are not buyer cells. */
 export function existingDirectPhone(buyerId: number): string | null {
   const rows = db().prepare(
     `SELECT phone FROM buyer_contacts
-      WHERE buyer_id=? AND phone IS NOT NULL AND trim(phone)!=''
-      ORDER BY CASE verification WHEN 'inbound' THEN 0 ELSE 1 END, id DESC`
+      WHERE buyer_id=? AND verification='inbound' AND phone IS NOT NULL AND trim(phone)!=''
+      ORDER BY id DESC`
   ).all(buyerId) as Array<{ phone: string }>;
   for (const row of rows) {
     const ok = usableDirectPhone(row.phone);
@@ -209,6 +209,28 @@ export function closeFalseBounceHandoffs(): number {
   ).run().changes;
 }
 
+function phoneDigitsKey(phone: string | null | undefined): string {
+  return (phone ?? "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+}
+
+/** Drop stale open packets that are not an inbound-verified cell and have no Oliver job. */
+export function closeInvalidOpenHandoffs(): number {
+  const rows = db().prepare(
+    "SELECT id, buyer_id, phone FROM escalations WHERE state='open'"
+  ).all() as Array<{ id: number; buyer_id: number; phone: string | null }>;
+  let n = 0;
+  for (const row of rows) {
+    if (hasOliverHandoffJob(row.id)) continue;
+    const usable = usableDirectPhone(row.phone);
+    const inbound = usable ? existingDirectPhone(row.buyer_id) : null;
+    const same = inbound && phoneDigitsKey(inbound) === phoneDigitsKey(usable);
+    if (usable && same) continue;
+    db().prepare("UPDATE escalations SET state='closed' WHERE id=? AND state='open'").run(row.id);
+    n += 1;
+  }
+  return n;
+}
+
 function companyFromSendLimitBody(text: string): string | null {
   const hit = text.match(/Hi (.+?) team/i)?.[1]?.trim();
   return hit || null;
@@ -288,7 +310,8 @@ function queueMissingOpenPhoneJobs(): number {
     if (looksLikeHardBounce(raw, inbound?.from_address ?? "")) continue;
     if (looksLikeAutoAck(raw) && !/\?/.test(buyerAuthoredReply(raw))) continue;
     const analysis = classifyReply(raw);
-    if (!analysis.phone) analysis.phone = esc.phone;
+    applyExistingDirectPhone(analysis, esc.buyer_id, raw);
+    if (!analysis.phone) continue;
     if (!isHotLead(analysis)) continue;
     queueOliverHandoff({ escalationId: esc.id, packet: esc.packet, phone: esc.phone });
     n += 1;

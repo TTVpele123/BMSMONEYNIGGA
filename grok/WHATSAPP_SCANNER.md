@@ -19,7 +19,7 @@ Priority: P0. Success = new/updated lot available for matching. Not “messages 
 - A **scan is read-only**. Never focus the WhatsApp composer. Never type, paste, backspace, select-all, or delete. Never open, edit, or clear an existing draft.
 - Never message Oliver during a scan.
 - The **only** automated Oliver message is a verified phone-number handoff. Never send anything else to Oliver under any circumstances.
-- Oliver handoff is a **separate send action**, never mixed into a scan. No confirmation from Bailey. Every run starts with `GET /api/health`. If `queued_oliver_handoffs > 0`, this run is a handoff: `GET /api/grok/jobs?agent=INBOUND_ANALYST&claim=1` (one job). Send `input.packet` (Name / Phone / Product) as a **new** message. Attach `input.photos` when that array is non-empty (original certain lot photos only). Do not touch any draft already in the box — if text is already there, leave it and type in a fresh composer/send. Then `POST /api/grok/jobs`. Stop. Do not scan on a handoff run. Code dedupes so each escalation sends exactly once.
+- Oliver handoff is a **separate send action**, never mixed into a scan. No confirmation from Bailey. Every run starts with `GET /api/health`. If `queued_oliver_handoffs > 0`, this run is a handoff: `GET /api/grok/jobs?agent=INBOUND_ANALYST&claim=1` (one job). Send `input.packet` (Name / Cell / Product / one short buyer note) as a **new** message. Attach `input.photos` when that array is non-empty (original certain lot photos only). Empty photos must not block — send the text anyway. No status chatter. Do not touch any draft already in the box — if text is already there, leave it and type in a fresh composer/send. Then `POST /api/grok/jobs`. Stop. Do not scan on a handoff run. Code dedupes so each escalation sends exactly once.
 - Download **original** image files only. Never screenshot the chat UI.
 - Never use stock photos, Google images, or any substitute media.
 - Never invent quantity, price, brand, sizes, licensing, or condition. If unstated, omit the field.
@@ -141,7 +141,7 @@ One action per run. Never scan and send in the same run. Health decides — do n
 1. `GET /api/health` — kill false, live OK.
 2. If `queued_oliver_handoffs > 0` (or `heartbeat.queuedOliverHandoffs > 0`): **HANDOFF RUN** — send immediately. Do not ask Bailey.
    - `GET /api/grok/jobs?agent=INBOUND_ANALYST&claim=1` only (never unscoped, never `FORM_OPERATOR`, never a peek GET). Empty → stop. Do not scan.
-   - Open Oliver Sharrafian. Send **one new message**: `input.packet` only (Name / Phone / Product). Attach `input.photos` when present. Never attach a chat screenshot. Never invent facts.
+   - Open Oliver Sharrafian. Send **one new message**: `input.packet` only (Name / Cell / Product / one short buyer note). Attach `input.photos` when present. Empty photos must not block. No status chatter. Never attach a chat screenshot. Never invent facts.
    - Do not click, select, delete, or edit any existing draft. If the composer already has text, leave it and send from a fresh composer.
    - `POST /api/grok/jobs` `{ id, ok: true, result }`. Stop. Do not send a second Oliver message.
 3. Else: **SCAN RUN**

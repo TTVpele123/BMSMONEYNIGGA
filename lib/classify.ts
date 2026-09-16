@@ -28,6 +28,7 @@ const COMPACT_NANP = /\b([2-9]\d{9})\b/g;
 const OUR_LINE = /818[-.\s]?406[-.\s]?8612/;
 const MOBILE_LABEL = /(?:^|\n)\s*(?:m|c|cell|mobile|direct|whatsapp)\s*[:.\-]?\s*((?:\+?1[-.\s])?(?:\(\d{3}\)\s*|\d{3}[-.\s])\d{3}[-.\s]?\d{4}|\+\d{1,3}[-.\s](?:\(?0\)?[-.\s]?)?\d{2,4}[-.\s]\d{3,4}[-.\s]?\d{3,4})/i;
 const FAX_LABEL = /(?:^|\n|[|\s])(?:f|fax)\s*[:.\-]?\s*((?:\+?1[-.\s])?(?:\(\d{3}\)|\d{3})[-.\s]\d{3}[-.\s]\d{4})/i;
+const OFFICE_LABEL = /(?:^|\n|[|\s])(?:o|office|main|hq|switchboard)\s*[:.\-]?\s*((?:\+?1[-.\s])?(?:\(\d{3}\)|\d{3})[-.\s]\d{3}[-.\s]\d{4})/i;
 
 function cleanPhone(raw: string): string {
   return raw.replace(/\s+/g, " ").trim();
@@ -49,12 +50,14 @@ function looksLikeEmbeddedId(text: string, phone: string): boolean {
 export function extractPhone(text: string): string | null {
   const hay = buyerAuthoredReply(text) || text;
   const fax = new Set((hay.match(new RegExp(FAX_LABEL, "gi")) ?? []).map((m) => phoneDigits(m)));
+  const office = new Set((hay.match(new RegExp(OFFICE_LABEL, "gi")) ?? []).map((m) => phoneDigits(m)));
+  const skip = (p: string) => OUR_LINE.test(p) || fax.has(phoneDigits(p)) || office.has(phoneDigits(p)) || looksLikeEmbeddedId(hay, p);
   const labeled = hay.match(MOBILE_LABEL);
-  if (labeled?.[1] && !OUR_LINE.test(labeled[1]) && !fax.has(phoneDigits(labeled[1])) && !looksLikeEmbeddedId(hay, labeled[1])) {
+  if (labeled?.[1] && !skip(labeled[1])) {
     return cleanPhone(labeled[1]);
   }
   const all = [...(hay.match(NANP) ?? []), ...(hay.match(COMPACT_NANP) ?? [])];
-  const picked = all.find((p) => !OUR_LINE.test(p) && !fax.has(phoneDigits(p)) && !looksLikeEmbeddedId(hay, p));
+  const picked = all.find((p) => !skip(p));
   return picked ? cleanPhone(picked) : null;
 }
 

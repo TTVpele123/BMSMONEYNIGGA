@@ -34,6 +34,9 @@ describe("warm inbound", () => {
     expect(extractPhone("Do you have tables?\nP: 805.644.4496 | F: 805.644.4574")).not.toContain("4574");
     expect(extractPhone("Arielle Manz\nAssociate Buyer\n(310)834-0004 ext. 256")).toContain("310");
     expect(extractPhone("Mobile    +49 173 690 1124")).toMatch(/173|49/);
+    expect(extractPhone("Office: 212-555-0100\nThanks")).toBeNull();
+    expect(extractPhone("Main 800-555-0100")).toBeNull();
+    expect(extractPhone("Call my cell 212-555-0199")).toContain("212");
     expect(classifyReply("Thanks for the offer. I just don’t have a need.").classification).toBe("not_interested");
   });
 
@@ -164,7 +167,7 @@ describe("warm inbound", () => {
     const attempt = db().prepare("SELECT status, body, reason FROM outreach_attempts WHERE idempotency_key=?").get(`warm-reply:${inboundId}`) as { status: string; body: string; reason: string };
     expect(attempt.status).toBe("dry_run");
     expect(attempt.body).toContain("What's the best phone number to reach you at?");
-    expect(attempt.body).toContain("I don't have verified");
+    expect(attempt.body).not.toContain("I don't have verified");
     expect((db().prepare("SELECT COUNT(*) AS n FROM escalations WHERE buyer_id=?").get(buyerId) as { n: number }).n).toBe(0);
   });
 
@@ -180,7 +183,9 @@ describe("warm inbound", () => {
     const esc = db().prepare("SELECT packet, phone FROM escalations WHERE buyer_id=?").get(buyerId) as { packet: string; phone: string };
     expect(esc.phone).toContain("415");
     expect(esc.packet).toContain("415-555-0100");
-    expect(esc.packet.split("\n")).toHaveLength(3);
+    expect(esc.packet).toMatch(/Interested/i);
+    expect(esc.packet.split("\n").length).toBeGreaterThanOrEqual(3);
+    expect(esc.packet.split("\n").length).toBeLessThanOrEqual(4);
     const job = db().prepare("SELECT id, instruction, input FROM grok_jobs WHERE agent='INBOUND_ANALYST'").get() as { id: number; instruction: string; input: string };
     expect(job.instruction).toMatch(/Oliver on WhatsApp|Oliver's WhatsApp/);
     expect(job.input).toContain("415");
@@ -407,6 +412,33 @@ describe("warm inbound", () => {
     });
     expect(r.escalated).toBe(false);
     expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST'").get() as { n: number }).n).toBe(0);
+  });
+
+  it("does not treat a scraped company number as an interested-buyer cell", async () => {
+    const buyerId = seedBuyer("scrapedoffice.com");
+    db().prepare("UPDATE buyer_contacts SET phone='212-555-0100', verification='web_verified' WHERE buyer_id=?").run(buyerId);
+    const r = await processInbound({
+      from: "buy@scrapedoffice.com",
+      text: "Thanks — send the hoodie details when you can.",
+      providerMessageId: "scraped-office-1",
+    });
+    expect(r.escalated).toBe(false);
+    expect((db().prepare("SELECT phone FROM inbound_events WHERE provider_message_id='scraped-office-1'").get() as { phone: string | null }).phone).toBeNull();
+    expect((db().prepare("SELECT COUNT(*) AS n FROM grok_jobs WHERE agent='INBOUND_ANALYST'").get() as { n: number }).n).toBe(0);
+  });
+
+  it("puts one short buyer note on the Oliver packet", async () => {
+    const buyerId = seedBuyer("noteco.com");
+    const r = await processInbound({
+      from: "buy@noteco.com",
+      text: "Interested in the drills. Can you hold 200 units? Call 415-555-0177.",
+      providerMessageId: "note-packet-1",
+    });
+    expect(r.escalated).toBe(true);
+    const packet = (db().prepare("SELECT packet FROM escalations WHERE buyer_id=? ORDER BY id DESC LIMIT 1").get(buyerId) as { packet: string }).packet;
+    expect(packet).toContain("415-555-0177");
+    expect(packet).toMatch(/Interested in the drills/i);
+    expect(packet).not.toMatch(/OLIVER HANDOFF|photos_attached|status:/i);
   });
 
   it("uses a stored mobile before asking for a phone", async () => {

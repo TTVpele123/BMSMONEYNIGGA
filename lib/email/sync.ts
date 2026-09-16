@@ -2,7 +2,7 @@ import { getSetting, setSetting, audit } from "../db";
 import { processInbound, repairSenderLimitNotices, replayStoredBounces } from "../inbound";
 import { AUTHORIZED_SENDER, PREVIOUS_SENDER, parseFromHeader } from "./address";
 import { extractFailedRecipient } from "./bounce";
-import { fetchRecentBounceMessages, gmailInboxConfigured, getGmailClient, type GmailInboxMessage } from "./provider";
+import { fetchRecentBounceMessages, gmailInboxConfigured, getGmailClient, prioritizeInboxMessages, type GmailInboxMessage } from "./provider";
 
 async function ingestMessage(m: GmailInboxMessage, mailbox: string): Promise<boolean> {
   const failed = m.failedRecipient || (m.bounced ? extractFailedRecipient(m.text || m.subject, m.from) : null);
@@ -49,7 +49,7 @@ export async function syncGmailInbox(): Promise<{ ok: boolean; ingested: number;
     setSetting("gmail_bounce_backfill_at", new Date().toISOString());
   }
   let ingested = 0;
-  for (const m of messages) {
+  for (const m of prioritizeInboxMessages(messages)) {
     if (await ingestMessage(m, mailboxOf.get(m.providerMessageId) ?? AUTHORIZED_SENDER)) ingested += 1;
   }
   repairSenderLimitNotices();

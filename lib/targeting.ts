@@ -289,7 +289,18 @@ export function qualityFunnel() {
   return { by_quality: byQuality, by_source: rows };
 }
 
+/** Recycle unclaimed upgrade slots so overnight leftovers cannot block the window. */
+export function expireStaleUpgradeJobs(minutes = 90): number {
+  return db().prepare(
+    `UPDATE grok_jobs SET state='failed', result=?, finished_at=datetime('now')
+      WHERE agent='OPPORTUNITY_RESEARCHER' AND state='queued'
+        AND instruction LIKE 'upgrade-contact:%'
+        AND created_at <= datetime('now', ?)`
+  ).run(JSON.stringify({ expired: true, reason: "upgrade slot recycled — unclaimed" }), `-${minutes} minutes`).changes;
+}
+
 export function enqueueContactUpgradeJobs(limit = 8): number {
+  expireStaleUpgradeJobs();
   const pending = db().prepare(
     `SELECT COUNT(*) AS n FROM grok_jobs
       WHERE agent='OPPORTUNITY_RESEARCHER' AND state IN ('queued','claimed')

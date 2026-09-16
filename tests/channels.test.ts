@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { applyFormResult } from "../lib/channels/form-exec";
-import { interpretFormResult } from "../lib/channels/form";
+import { classifyFormHandle, interpretFormResult } from "../lib/channels/form";
 import { listOperators } from "../lib/channels/registry";
 import { recordEndpoint, selectChannel, selectChannels } from "../lib/channels/select";
 import { db, setSetting } from "../lib/db";
@@ -354,6 +354,7 @@ describe("channel router", () => {
     expect(interpretFormResult({ submitted: true, confirmationText: "Dziękujemy. Twoja wiadomość została wysłana." }).state).toBe("confirmed");
     expect(interpretFormResult({ submitted: true, confirmationText: "Thanks! We'll review your inquiry and get back to you within 1-2 business days." }).state).toBe("confirmed");
     expect(interpretFormResult({ submitted: false }).state).toBe("deferred");
+    expect(classifyFormHandle("https://buyer.example/contact?cf=turnstile").kind).toBe("gated");
   });
 
   it("claiming FORM_OPERATOR keeps email-touched jobs and cancels confirmed form sends", () => {

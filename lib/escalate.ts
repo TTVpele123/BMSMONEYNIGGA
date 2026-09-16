@@ -105,7 +105,17 @@ function personName(buyerId: number, authored: string | null | undefined, compan
   return company;
 }
 
-/** WhatsApp text only: name, phone, goods. Photos are attached separately. */
+function shortBuyerNote(authored: string | null | undefined): string | null {
+  if (!authored) return null;
+  const line = authored.replace(/\s+/g, " ").trim();
+  if (!line) return null;
+  if (/oliver handoff|do not auto|photos_attached|status:/i.test(line)) return null;
+  const sentence = line.split(/(?<=[.!?])\s+/)[0] || line;
+  const note = sentence.slice(0, 140).trim();
+  return note || null;
+}
+
+/** WhatsApp text: name, cell, product, one short buyer note. Photos attach separately and must not block. */
 function buildHandoffPacket(input: {
   buyerId: number;
   conversationId: number;
@@ -116,15 +126,11 @@ function buildHandoffPacket(input: {
   lots: LotRef[];
 }): { packet: string; lotIds: number[]; phone: string } {
   const buyer = db().prepare("SELECT company, domain FROM buyers WHERE id=?").get(input.buyerId) as { company: string; domain: string };
-  const contact = db().prepare(
-    `SELECT phone FROM buyer_contacts
-      WHERE buyer_id=? AND phone IS NOT NULL AND trim(phone)!=''
-      ORDER BY id DESC LIMIT 1`
-  ).get(input.buyerId) as { phone: string | null } | undefined;
   const person = personName(input.buyerId, input.question, buyer.company);
-  const phone = input.phone ?? contact?.phone ?? "NOT YET CAPTURED — primary next action";
+  const phone = input.phone ?? "NOT YET CAPTURED — primary next action";
   const goods = goodsLabel(input.lots);
-  const packet = [person, phone, goods].join("\n");
+  const note = shortBuyerNote(input.question);
+  const packet = [person, phone, goods, note].filter((part) => part && String(part).trim()).join("\n");
   return { packet, lotIds: input.lots.map((l) => l.id), phone };
 }
 

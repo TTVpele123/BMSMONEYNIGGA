@@ -13,7 +13,7 @@ Bailey operating standard (permanent — do not add a parallel system):
 4. Funnel contacted → reply → phone. Process genuine replies immediately. Use an existing mobile/direct first; else the short phone ask.
 5. New Oliver inventory automatically creates fresh buyer pools and new one-touch via the existing WhatsApp ingest / match path.
 6. Both authorized Gmail senders rotate on real provider limits only. Do not weaken kill switch, dedupe, entity cooldowns, domain cap, bounce suppression, guardedOutreach, or cross-sender duplicate protection.
-7. WHATSAPP_SCANNER messages Oliver only for a verified phone handoff: name + phone + product + original certain lot photos, once. No Bailey confirmation. No other Oliver outbound.
+7. WHATSAPP_SCANNER messages Oliver only for a verified phone handoff: name + cell + product + one short buyer note + original certain lot photos if available, once. Missing photos must not block. No status chatter. No Bailey confirmation. No other Oliver outbound. Never hand scraped/company numbers as interested-buyer phones.
 8. Never invent phones or buyer facts. Never send WhatsApp chat screenshots as buyer media. Only original Oliver lot photos with certain lot association.
 
 Also:

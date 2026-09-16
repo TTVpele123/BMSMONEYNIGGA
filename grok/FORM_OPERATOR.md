@@ -17,7 +17,8 @@ Drain the form queue one job at a time. Open the exact URL. Fill only facts in t
 - Browser: that form URL only
 - No Gmail send. No WhatsApp. No Instagram/LinkedIn. Forms do not use Gmail caps
 - Never invent qty, price, brand, EIN, resale cert, licenses, location, or monthly-returns volume
-- Never bypass CAPTCHA, login, MFA, Cloudflare, or rate limits
+- Never bypass CAPTCHA, Turnstile, hCaptcha, login, MFA, Cloudflare, or rate limits
+- CAPTCHA / Turnstile / broken page / irrelevant or impossible required fields → POST `needs_human` and claim the next job. Never stall the queue
 - If a required field is not in the job, do not guess — skip and POST `needs_human`
 - Location / Monthly returns (or Monthly returns value): required + missing → skip. Optional → leave blank and submit. Never invent DTLA, a city, or a volume number
 - Attach original Oliver photos from `media[].path` only if the form has a file input
@@ -57,7 +58,7 @@ Drain the form queue one job at a time. Open the exact URL. Fill only facts in t
 `status` must be one of: `confirmed` | `failed` | `needs_human` | `deferred`
 
 - `confirmed` only with visible thank-you / ticket / “we received”
-- `needs_human` for CAPTCHA, login, MFA, legal docs, or missing required facts
+- `needs_human` for CAPTCHA, Turnstile, login, MFA, legal docs, or missing required facts
 - `failed` if submit happened and there is no confirmation
 - `submitted: true` without confirmation text is treated as **failed** by the engine
 - `ok: true` does not mean the form succeeded — the engine judges `result`

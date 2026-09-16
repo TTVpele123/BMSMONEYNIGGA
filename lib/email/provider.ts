@@ -285,28 +285,69 @@ async function profileHistoryId(fetchFn: GmailFetch): Promise<string | null> {
   return asHistoryId(j.historyId);
 }
 
+/** Real buyer mail only — DSNs stay on the separate bounce pull / history tail. */
+export const BUYER_INBOX_QUERY =
+  'in:inbox newer_than:2d -from:mailer-daemon -from:postmaster -subject:(undeliverable OR "Delivery Status Notification" OR "Address not found" OR "Mail Delivery")';
+
+/** Buyer replies first so a DSN burst cannot occupy the read cap. */
+export function mergeBuyerFirstIds(buyerIds: string[], otherIds: string[], cap = 50): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of [...buyerIds, ...otherIds]) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+export function prioritizeInboxMessages<T extends { bounced: boolean }>(messages: T[]): T[] {
+  return [...messages].sort((a, b) => Number(a.bounced) - Number(b.bounced));
+}
+
+async function listMessageIds(fetchFn: GmailFetch, q: string, max: number): Promise<string[]> {
+  const r = await fetchFn(`messages?maxResults=${max}&q=${encodeURIComponent(q)}`);
+  if (!r.ok) return [];
+  const j = await r.json() as { messages?: { id: string }[] };
+  return (j.messages ?? []).map((m) => m.id);
+}
+
 async function listInboxWith(fetchFn: GmailFetch, historyId: string | null): Promise<GmailInboxPage> {
-  const q = historyId
-    ? `history?startHistoryId=${historyId}&historyTypes=messageAdded`
-    : "messages?maxResults=50&q=" + encodeURIComponent("in:inbox newer_than:2d -from:mailer-daemon -from:postmaster");
-  const r = await fetchFn(q);
-  if (r.status === 404 && historyId) return listInboxWith(fetchFn, null);
-  if (!r.ok) throw new Error(`gmail list ${r.status}`);
-  const j = await r.json() as {
-    historyId?: string | number;
-    history?: { messagesAdded?: { message: { id: string } }[] }[];
-    messages?: { id: string }[];
-  };
-  const ids = historyId
-    ? (j.history ?? []).flatMap((h) => (h.messagesAdded ?? []).map((m) => m.message.id))
-    : (j.messages ?? []).map((m) => m.id);
+  const buyerIds = await listMessageIds(fetchFn, BUYER_INBOX_QUERY, historyId ? 25 : 50);
+  if (historyId) {
+    const r = await fetchFn(`history?startHistoryId=${historyId}&historyTypes=messageAdded`);
+    if (r.status === 404) return listInboxWith(fetchFn, null);
+    if (!r.ok) throw new Error(`gmail list ${r.status}`);
+    const j = await r.json() as {
+      historyId?: string | number;
+      history?: { messagesAdded?: { message: { id: string } }[] }[];
+    };
+    const historyIds = (j.history ?? []).flatMap((h) => (h.messagesAdded ?? []).map((m) => m.message.id));
+    const messages: GmailInboxMessage[] = [];
+    for (const id of mergeBuyerFirstIds(buyerIds, historyIds)) {
+      const parsed = await readGmailMessage(id, fetchFn);
+      if (parsed) messages.push(parsed);
+    }
+    const listed = asHistoryId(j.historyId) ?? historyId;
+    return {
+      messages: prioritizeInboxMessages(messages),
+      historyId: listed ?? await profileHistoryId(fetchFn),
+    };
+  }
+
+  const fallbackIds = buyerIds.length
+    ? buyerIds
+    : await listMessageIds(fetchFn, BUYER_INBOX_QUERY, 50);
   const messages: GmailInboxMessage[] = [];
-  for (const id of ids.slice(0, 50)) {
+  for (const id of fallbackIds.slice(0, 50)) {
     const parsed = await readGmailMessage(id, fetchFn);
     if (parsed) messages.push(parsed);
   }
-  const listed = asHistoryId(j.historyId) ?? historyId;
-  return { messages, historyId: listed ?? await profileHistoryId(fetchFn) };
+  return {
+    messages: prioritizeInboxMessages(messages),
+    historyId: await profileHistoryId(fetchFn),
+  };
 }
 
 async function readGmailMessage(id: string, fetchFn: GmailFetch = gmailFetch): Promise<GmailInboxMessage | null> {

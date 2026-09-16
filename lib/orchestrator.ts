@@ -171,9 +171,10 @@ export async function runSchedulerCycle(): Promise<SchedulerCycle> {
   try {
     const { syncGmailInbox } = await import("./email/sync");
     inbox = await syncGmailInbox();
-    const { closeFalseBounceHandoffs, continueMissedPhoneHandoffs, continueUnansweredWarmInbounds } = await import("./inbound");
+    const { closeFalseBounceHandoffs, closeInvalidOpenHandoffs, continueMissedPhoneHandoffs, continueUnansweredWarmInbounds } = await import("./inbound");
     const { releaseStaleClaimedGrokJobs } = await import("./research");
     closeFalseBounceHandoffs();
+    closeInvalidOpenHandoffs();
     continueMissedPhoneHandoffs();
     await continueUnansweredWarmInbounds();
     releaseStaleClaimedGrokJobs();

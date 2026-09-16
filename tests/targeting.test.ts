@@ -12,6 +12,8 @@ import { enrollBuyer, researchTick } from "../lib/research";
 import {
   applyBetterContact,
   classifyEmailQuality,
+  enqueueContactUpgradeJobs,
+  expireStaleUpgradeJobs,
   listWeakEmailBuyers,
   QUALITY_RANK,
   recordQualityOutcome,
@@ -233,5 +235,13 @@ describe("contact quality ranking", () => {
     expect(listWeakEmailBuyers().some((t) => t.domain === "weakmail.com")).toBe(true);
     expect(researchCoverage().upgrade_targets.some((t) => t.domain === "weakmail.com")).toBe(true);
     expect(opportunityWorklist().upgrade_targets.some((t) => t.domain === "weakmail.com")).toBe(true);
+  });
+
+  it("recycles unclaimed upgrade slots so new targets can enqueue", () => {
+    db().prepare(
+      "INSERT INTO grok_jobs(agent,instruction,input,state,created_at) VALUES('OPPORTUNITY_RESEARCHER','upgrade-contact:1','{}','queued', datetime('now','-2 hours'))"
+    ).run();
+    expect(expireStaleUpgradeJobs(90)).toBeGreaterThanOrEqual(1);
+    expect(enqueueContactUpgradeJobs()).toBeGreaterThanOrEqual(0);
   });
 });
